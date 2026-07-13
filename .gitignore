@@ -1,0 +1,29 @@
+# Entorno y config
+.env
+*.env
+
+# Base de datos (grande)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Reportes descargados
+*.xlsx
+*.xls
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temp
+/tmp/
+*.tmp
+*.log
+*.out
+
+# Debug
+debug_*.py
+sap_*.png
+sap_body.html
