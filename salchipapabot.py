@@ -34,7 +34,7 @@ from handlers import (
     cuenta_contrato_command, coordenadas_command,
     resumenayer_command, resumenmes_command, resumendia_command,
     sql_command, orden_sap_command,
-    resumen_reclamos_dia_command
+    resumen_reclamos_dia_command, datos_cuenta_contrato_command
 )
 from database import (
     buscar_medidor, preguntar_bd
@@ -440,6 +440,7 @@ def main():
     app.add_handler(CommandHandler("solicitud", solicitud_command))
     app.add_handler(CommandHandler("medidor_avanzado", medidor_avanzado_command))
     app.add_handler(CommandHandler("cuenta_contrato", cuenta_contrato_command))
+    app.add_handler(CommandHandler("datos_cuenta_contrato", datos_cuenta_contrato_command))
     app.add_handler(CommandHandler("coordenadas", coordenadas_command))
     app.add_handler(CommandHandler("preguntar", preguntar_command))
     app.add_handler(CommandHandler("resumenayer", resumenayer_command))

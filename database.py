@@ -144,7 +144,8 @@ def buscar_medidor_avanzado(numero_medidor):
 def buscar_tramite(numero_tramite):
     """Busca en recorrido_cuadrillas y gestion_tramites"""
     sql_rec = """
-        SELECT numero_solicitud, tipo_solicitud, cuadrilla, fecha_ejecucion
+        SELECT numero_solicitud, tipo_solicitud, cuadrilla, fecha_ejecucion,
+               cuenta_contrato
         FROM recorrido_cuadrillas 
         WHERE numero_tramite = ?
         LIMIT 1
@@ -164,7 +165,7 @@ def buscar_tramite(numero_tramite):
     # Si no está en recorrido_cuadrillas, buscar directamente en gestion_tramites
     sql_gt = """
         SELECT numero_solicitud, tipo_solicitud, cuadrilla, fecha_ejecucion,
-               observacion_gestion
+               cuenta_contrato, observacion_gestion
         FROM gestion_tramites 
         WHERE numero_tramite = ?
         LIMIT 1
@@ -172,9 +173,9 @@ def buscar_tramite(numero_tramite):
     resultado, cols = consultar_sqlite(sql_gt, (str(numero_tramite),))
     if resultado:
         r = resultado[0]
-        # Devolver en el mismo formato: (numero_solicitud, tipo, cuadrilla, fecha)
-        recorrido = [(r[0], r[1], r[2], r[3])]
-        observacion = [(r[4],)]
+        # Devolver en el mismo formato: (numero_solicitud, tipo, cuadrilla, fecha, cuenta_contrato)
+        recorrido = [(r[0], r[1], r[2], r[3], r[4])]
+        observacion = [(r[5],)]
         return recorrido, observacion
     
     return None, None
@@ -183,7 +184,8 @@ def buscar_tramite(numero_tramite):
 def buscar_solicitud(numero_solicitud):
     """Busca en recorrido_cuadrillas y gestion_tramites por numero_solicitud"""
     sql_rec = """
-        SELECT numero_tramite, tipo_solicitud, cuadrilla, fecha_ejecucion
+        SELECT numero_tramite, tipo_solicitud, cuadrilla, fecha_ejecucion,
+               cuenta_contrato
         FROM recorrido_cuadrillas 
         WHERE numero_solicitud = ?
         LIMIT 1
@@ -204,7 +206,7 @@ def buscar_solicitud(numero_solicitud):
     # Si no está en recorrido_cuadrillas, buscar en gestion_tramites
     sql_gt = """
         SELECT numero_tramite, tipo_solicitud, cuadrilla, fecha_ejecucion,
-               observacion_gestion
+               cuenta_contrato, observacion_gestion
         FROM gestion_tramites 
         WHERE numero_solicitud = ?
         LIMIT 1
@@ -212,9 +214,9 @@ def buscar_solicitud(numero_solicitud):
     resultado, cols = consultar_sqlite(sql_gt, (str(numero_solicitud),))
     if resultado:
         r = resultado[0]
-        # Devolver en el mismo formato: (numero_tramite, tipo, cuadrilla, fecha)
-        recorrido = [(r[0], r[1], r[2], r[3])]
-        observacion = [(r[4],)]
+        # Devolver en el mismo formato: (numero_tramite, tipo, cuadrilla, fecha, cuenta_contrato)
+        recorrido = [(r[0], r[1], r[2], r[3], r[4])]
+        observacion = [(r[5],)]
         return recorrido, observacion
     
     return None, None
@@ -326,6 +328,23 @@ def buscar_por_cuenta_contrato(cuenta, limite=10):
     """
     resultados, _ = consultar_sqlite(sql, (cuenta_limpio, limite))
     return resultados
+
+
+def buscar_ultimo_por_cuenta_contrato(cuenta_contrato):
+    """Busca el último trámite en recorrido_cuadrillas por cuenta_contrato y devuelve datos del cliente"""
+    cuenta = str(cuenta_contrato).strip().rstrip('.0')
+    sql = """
+        SELECT identificacion_cliente, cliente, tarifa, direccion,
+               mru, med_numero, med_serie, lon_cnel, lat_cnel
+        FROM recorrido_cuadrillas
+        WHERE cuenta_contrato LIKE ? || '%'
+        ORDER BY id_recorrido DESC
+        LIMIT 1
+    """
+    resultados, cols = consultar_sqlite(sql, (cuenta,))
+    if resultados:
+        return resultados[0]
+    return None
 
 
 # ============================================

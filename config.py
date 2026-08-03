@@ -68,6 +68,7 @@ Bot de consultas para gestión de trámites, medidores y datos operativos del Co
 📌 `/solicitud` [número] - Buscar por número de solicitud
 📌 `/medidor_avanzado` [número] - Búsqueda en cualquier campo
 📌 `/cuenta_contrato` [cuenta] - Búsqueda por cuenta contrato (muestra medidor N°)
+📌 `/datos_cuenta_contrato` [cuenta] - Datos del cliente del último trámite
 📌 `/coordenadas` [cuenta] - Coordenadas CNEL y GPS en Google Maps
 📌 `/orden_sap` [solicitud] - Buscar orden SAP por número de solicitud
 📌 `/preguntar` [consulta] - Consulta en lenguaje natural a la base de datos

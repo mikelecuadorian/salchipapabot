@@ -23,6 +23,9 @@ __pycache__/
 *.log
 *.out
 
+# Backups viejos (contenían API keys)
+bot_old/
+
 # Debug
 debug_*.py
 sap_*.png

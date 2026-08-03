@@ -19,7 +19,7 @@ from database import (
     buscar_medidor, buscar_tramite, buscar_solicitud, 
     buscar_medidor_avanzado, buscar_por_cuenta_contrato,
     buscar_por_cuenta_contrato_avanzado, consultar_sqlite,
-    buscar_fotos_tramite
+    buscar_fotos_tramite, buscar_ultimo_por_cuenta_contrato
 )
 import requests
 import os
@@ -146,6 +146,14 @@ async def tramite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     r = recorrido[0]
     obs = observacion[0][0] if observacion else "No registrada"
+    cuenta_raw = r[4]
+    if cuenta_raw:
+        try:
+            cuenta = str(int(float(cuenta_raw)))
+        except (ValueError, TypeError):
+            cuenta = str(cuenta_raw).strip()
+    else:
+        cuenta = "No registrada"
     
     respuesta = (
         f"📋 **TRÁMITE {numero}**\n"
@@ -154,6 +162,7 @@ async def tramite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷️ **Tipo:** {r[1] or 'No registrado'}\n"
         f"👥 **Cuadrilla:** {r[2] or 'No registrada'}\n"
         f"📅 **Fecha ejecución:** {r[3] or 'No registrada'}\n"
+        f"🔢 **Cuenta contrato:** {cuenta}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📝 **Observación:**\n{obs}"
     )
@@ -181,6 +190,14 @@ async def solicitud_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     r = recorrido[0]
     obs = observacion[0][0] if observacion else "No registrada"
+    cuenta_raw = r[4]
+    if cuenta_raw:
+        try:
+            cuenta = str(int(float(cuenta_raw)))
+        except (ValueError, TypeError):
+            cuenta = str(cuenta_raw).strip()
+    else:
+        cuenta = "No registrada"
     
     respuesta = (
         f"📄 **SOLICITUD {numero}**\n"
@@ -189,6 +206,7 @@ async def solicitud_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷️ **Tipo:** {r[1] or 'No registrado'}\n"
         f"👥 **Cuadrilla:** {r[2] or 'No registrada'}\n"
         f"📅 **Fecha ejecución:** {r[3] or 'No registrada'}\n"
+        f"🔢 **Cuenta contrato:** {cuenta}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📝 **Observación:**\n{obs}"
     )
@@ -293,6 +311,48 @@ async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_
         else:
             await update.message.reply_text(linea)
     log(f"Comando /cuenta_contrato {numero} - {len(resultados)} resultados")
+
+async def datos_cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /datos_cuenta_contrato CUENTA - Datos del cliente del último trámite"""
+    if not context.args:
+        await update.message.reply_text("🔢 Ejemplo: `/datos_cuenta_contrato 200046107518`")
+        return
+    
+    numero = context.args[0]
+    await update.message.reply_text("👤 Buscando datos del cliente...")
+    
+    datos = buscar_ultimo_por_cuenta_contrato(numero)
+    
+    if not datos:
+        await update.message.reply_text(f"❌ No se encontraron datos para cuenta contrato: {numero}")
+        log(f"Comando /datos_cuenta_contrato {numero} - sin resultados")
+        return
+    
+    # Formatear coordenadas como enlaces Google Maps
+    lon, lat = datos[7], datos[8]
+    maps_link = ""
+    if lon and lat:
+        try:
+            maps_link = f"\n🗺️ [Ver en Google Maps](https://www.google.com/maps?q={lat},{lon})"
+        except:
+            pass
+    
+    respuesta = (
+        f"👤 **DATOS DEL CLIENTE**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 **Identificación:** {datos[0] or 'No registrada'}\n"
+        f"👤 **Cliente:** {datos[1] or 'No registrado'}\n"
+        f"🏷️ **Tarifa:** {datos[2] or 'No registrada'}\n"
+        f"📍 **Dirección:** {datos[3] or 'No registrada'}\n"
+        f"📋 **MRU:** {datos[4] or 'No registrado'}\n"
+        f"📟 **Medidor N°:** {datos[5] or 'No registrado'}\n"
+        f"🔢 **Serie medidor:** {datos[6] or 'No registrada'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📍 **Coordenadas CNEL:**\n"
+        f"   Lon: {lon or 'N/A'} | Lat: {lat or 'N/A'}{maps_link}"
+    )
+    await update.message.reply_text(respuesta)
+    log(f"Comando /datos_cuenta_contrato {numero} ejecutado")
 
 async def coordenadas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /coordenadas CUENTA_CONTRATO - Muestra coordenadas con Google Maps"""
