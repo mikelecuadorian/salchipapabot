@@ -258,12 +258,22 @@ async def medidor_avanzado_command(update: Update, context: ContextTypes.DEFAULT
         r = recorrido[0]
         respuesta += (
             f"\n━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 **Cuenta contrato:** {r[0] or 'No registrada'}\n"
+            f"💰 **Cuenta contrato:** {_fmt_sin_decimales(r[0]) or 'No registrada'}\n"
             f"📋 **Motivo solicitud:** {r[1] or 'No registrado'}"
         )
     
     await update.message.reply_text(respuesta)
     log(f"Comando /medidor_avanzado {numero} ejecutado")
+
+def _fmt_sin_decimales(valor):
+    """Limpia valores numéricos tipo '12345.0' para mostrarlos sin decimales"""
+    if valor is None or str(valor).strip() == '':
+        return valor
+    texto = str(valor).strip()
+    if texto.endswith('.0'):
+        return texto[:-2]
+    return valor
+
 
 async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /cuenta_contrato NUMERO - Busca por cuenta contrato y muestra med_numero"""
@@ -300,8 +310,8 @@ async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📟 **Medidor actual:** {datos[8] or '?'} / {datos[9] or '?'}\n"
             f"📊 **Contador:** {datos[10] or '?'} / {datos[11] or '?'}\n"
-            f"🆕 **Medidor nuevo:** {datos[12] or '?'} / {datos[13] or '?'}\n"
-            f"🔄 **Medidor retirado:** {datos[14] or '?'} / {datos[15] or '?'}\n"
+            f"🆕 **Medidor nuevo:** {_fmt_sin_decimales(datos[12]) or '?'} / {_fmt_sin_decimales(datos[13]) or '?'}\n"
+            f"🔄 **Medidor retirado:** {_fmt_sin_decimales(datos[14]) or '?'} / {_fmt_sin_decimales(datos[15]) or '?'}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📟 **Medidor N°:** {datos[8] or 'No registrado'}\n"
             f"📋 **Motivo solicitud:** {motivo or 'No registrado'}"
