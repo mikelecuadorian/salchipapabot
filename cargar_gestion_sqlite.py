@@ -152,6 +152,24 @@ def crear_tabla_gestion_si_no_existe(conn):
     """)
     conn.commit()
 
+def formatear_identificador(valor):
+    """Normaliza identificadores numéricos: 37130507.0 → '37130507'.
+    Preserva strings alfanuméricos (SL-2181794) y decimales reales (1234.5)."""
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, float):
+        if valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+    if isinstance(valor, int):
+        return str(valor)
+    s = str(valor).strip()
+    if s.lower() in ('nan', 'none'):
+        return None
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s if s else None
+
 def convertir_columnas_numericas(df, columnas):
     """Convierte columnas a tipo nullable Int64 (soporta NaN/None)"""
     for col in columnas:
@@ -392,6 +410,15 @@ def cargar_gestion_upsert_conteo_sqlite(ruta_archivo):
         'pt_taco_f6_u', 'pt_tornillo_taco_f6_u', 'pt_canaleta_u', 'n_sticker'
     ]
     df_to_load = convertir_columnas_numericas(df_to_load, columnas_numericas)
+    
+    # Normalizar identificadores numéricos (evita '37130507.0' → '37130507')
+    columnas_id = ['numero_tramite', 'numero_solicitud', 'cuenta_contrato', 'codigo_cliente',
+                   'med_numero', 'med_serie', 'medidor_cont_1', 'medidor_cont_2',
+                   'med_nue_num', 'med_nue_ser', 'med_nue_cont1', 'med_nue_cont2',
+                   'med_ret_num', 'med_ret_ser', 'med_ret_cont1', 'med_ret_cont2']
+    for col in columnas_id:
+        if col in df_to_load.columns:
+            df_to_load[col] = df_to_load[col].apply(formatear_identificador)
     
     # Conectar a SQLite
     conn = sqlite3.connect(DB_PATH)

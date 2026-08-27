@@ -53,6 +53,24 @@ def convertir_columnas_numericas(df, columnas):
             df[col] = df[col].astype('Int64')
     return df
 
+def formatear_identificador(valor):
+    """Normaliza identificadores numéricos: 37130507.0 → '37130507'.
+    Preserva strings alfanuméricos (SL-2181794) y decimales reales (1234.5)."""
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, float):
+        if valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+    if isinstance(valor, int):
+        return str(valor)
+    s = str(valor).strip()
+    if s.lower() in ('nan', 'none'):
+        return None
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s if s else None
+
 def cargar_materiales_upsert_conteo_sqlite(ruta_archivo):
     print(f"📂 Procesando (SQLite): {ruta_archivo}")
     
@@ -133,6 +151,13 @@ def cargar_materiales_upsert_conteo_sqlite(ruta_archivo):
     # Convertir cantidad a float (puede tener decimales)
     if 'cantidad' in df_to_load.columns:
         df_to_load['cantidad'] = pd.to_numeric(df_to_load['cantidad'], errors='coerce')
+    
+    # Normalizar identificadores numéricos (evita '37130507.0' → '37130507')
+    columnas_id = ['numero_tramite', 'numero_solicitud', 'numero_servicio',
+                   'codigo_cliente', 'med_numero', 'med_serie']
+    for col in columnas_id:
+        if col in df_to_load.columns:
+            df_to_load[col] = df_to_load[col].apply(formatear_identificador)
     
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

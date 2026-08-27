@@ -70,6 +70,24 @@ def crear_tabla_si_no_existe(conn):
     """)
     conn.commit()
 
+def formatear_identificador(valor):
+    """Normaliza identificadores numéricos: 37130507.0 → '37130507'.
+    Preserva strings alfanuméricos (SL-2181794) y decimales reales (1234.5)."""
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, float):
+        if valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+    if isinstance(valor, int):
+        return str(valor)
+    s = str(valor).strip()
+    if s.lower() in ('nan', 'none'):
+        return None
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s if s else None
+
 def cargar_recorrido_upsert_conteo_sqlite(ruta_archivo):
     print(f"📂 Procesando (SQLite): {ruta_archivo}")
     
@@ -176,6 +194,13 @@ def cargar_recorrido_upsert_conteo_sqlite(ruta_archivo):
     df_to_load = df_to_load[df_to_load['numero_tramite'] != 0]
     df_to_load['numero_tramite'] = df_to_load['numero_tramite'].astype(str).str.strip()
     df_to_load = df_to_load[df_to_load['numero_tramite'] != '']
+    
+    # Normalizar identificadores numéricos (evita '37130507.0' → '37130507')
+    columnas_id = ['numero_tramite', 'numero_solicitud', 'numero_servicio',
+                   'cuenta_contrato', 'codigo_cliente', 'med_numero', 'med_serie']
+    for col in columnas_id:
+        if col in df_to_load.columns:
+            df_to_load[col] = df_to_load[col].apply(formatear_identificador)
     
     # Conectar a SQLite y crear tabla si no existe
     conn = sqlite3.connect(DB_PATH)

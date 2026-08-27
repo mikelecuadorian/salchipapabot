@@ -105,14 +105,14 @@ def buscar_medidor_avanzado(numero_medidor):
             OR nota_materiales LIKE '%' || ? || '%'
             OR motivo_no_ejecucion LIKE '%' || ? || '%'
             OR detalle_no_ejecucion LIKE '%' || ? || '%'
-            OR med_numero = ? 
-            OR med_serie = ?
-            OR medidor_cont_1 = ? 
-            OR medidor_cont_2 = ?
-            OR med_nue_num = ? 
-            OR med_nue_ser = ?
-            OR med_ret_num = ? 
-            OR med_ret_ser = ?
+            OR TRIM(REPLACE(med_numero, '.0', '')) = ? 
+            OR TRIM(REPLACE(med_serie, '.0', '')) = ?
+            OR TRIM(REPLACE(medidor_cont_1, '.0', '')) = ? 
+            OR TRIM(REPLACE(medidor_cont_2, '.0', '')) = ?
+            OR TRIM(REPLACE(med_nue_num, '.0', '')) = ? 
+            OR TRIM(REPLACE(med_nue_ser, '.0', '')) = ?
+            OR TRIM(REPLACE(med_ret_num, '.0', '')) = ? 
+            OR TRIM(REPLACE(med_ret_ser, '.0', '')) = ?
         LIMIT 1
     """
     datos, _ = consultar_sqlite(sql, (numero, numero, numero, numero, 

@@ -13,6 +13,24 @@ TABLA_MEDIDORES = "medidores"
 MODO_POR_DEFECTO = 2
 # ============================================
 
+def formatear_identificador(valor):
+    """Normaliza identificadores numéricos: 37130507.0 → '37130507'.
+    Preserva strings alfanuméricos (SL-2181794) y decimales reales (1234.5)."""
+    if valor is None or pd.isna(valor):
+        return None
+    if isinstance(valor, float):
+        if valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+    if isinstance(valor, int):
+        return str(valor)
+    s = str(valor).strip()
+    if s.lower() in ('nan', 'none'):
+        return None
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s if s else None
+
 def conectar_sqlite():
     """Conectar a SQLite"""
     return sqlite3.connect(DB_PATH)
@@ -45,9 +63,9 @@ def cargar_medidores_sqlite(excel_path, modo=MODO_POR_DEFECTO):
         return False
     
     # 3. Limpiar datos
-    df['nro_serie'] = df['nro_serie'].astype(str).str.strip()
+    df['nro_serie'] = df['nro_serie'].apply(formatear_identificador)
     df['cuadrilla_nombre'] = df['cuadrilla_nombre'].astype(str).str.strip()
-    df['nro_tramite'] = df['nro_tramite'].astype(str).str.strip()
+    df['nro_tramite'] = df['nro_tramite'].apply(formatear_identificador)
     df = df.dropna(subset=['nro_serie'])
     df = df[df['nro_serie'] != '']
     df = df[df['nro_serie'] != 'nan']

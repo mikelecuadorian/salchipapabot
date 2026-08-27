@@ -26,6 +26,10 @@ __pycache__/
 # Backups viejos (contenían API keys)
 bot_old/
 
+# Backups locales de scripts y BD (no van al repo)
+backups_paso2/
+*.bak_paso3
+
 # Debug
 debug_*.py
 sap_*.png
