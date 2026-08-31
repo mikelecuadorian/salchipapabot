@@ -293,29 +293,47 @@ async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_
         log(f"Comando /cuenta_contrato {numero} - sin resultados")
         return
     
-    for i, (datos, cuenta_cto, motivo) in enumerate(resultados, 1):
+    for i, (datos, cuenta_cto, motivo, rc_extra) in enumerate(resultados, 1):
         # Enviar cada resultado como mensaje individual
-        linea = (
-            f"━━━━━━━━━━━━━ #{i} ━━━━━━━━━━━━━\n"
-            f"📋 **Trámite:** {datos[0] or 'No registrado'}\n"
-            f"📄 **Solicitud:** {datos[1] or 'No registrado'}\n"
-            f"👥 **Cuadrilla:** {datos[2] or 'No registrada'}\n"
-            f"📅 **Ejecución:** {datos[3] or 'No registrada'}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📝 **Observación:**\n{datos[4] or 'No registrada'}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🧰 **Nota materiales:** {datos[5] or 'No registrada'}\n"
-            f"❌ **Motivo no ejecución:** {datos[6] or 'No registrado'}\n"
-            f"📋 **Detalle:** {datos[7] or 'No registrado'}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📟 **Medidor actual:** {datos[8] or '?'} / {datos[9] or '?'}\n"
-            f"📊 **Contador:** {datos[10] or '?'} / {datos[11] or '?'}\n"
-            f"🆕 **Medidor nuevo:** {_fmt_sin_decimales(datos[12]) or '?'} / {_fmt_sin_decimales(datos[13]) or '?'}\n"
-            f"🔄 **Medidor retirado:** {_fmt_sin_decimales(datos[14]) or '?'} / {_fmt_sin_decimales(datos[15]) or '?'}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📟 **Medidor N°:** {datos[8] or 'No registrado'}\n"
-            f"📋 **Motivo solicitud:** {motivo or 'No registrado'}"
-        )
+        if datos is None:
+            # Trámite asignado en recorrido pero SIN gestión registrada
+            linea = (
+                f"━━━━━━━━━━━━━ #{i} ━━━━━━━━━━━━━\n"
+                f"⚠️ **NO GESTIONADO**\n"
+                f"📋 **Trámite:** {rc_extra['numero_tramite'] or 'No registrado'}\n"
+                f"📄 **Solicitud:** {rc_extra['numero_solicitud'] or 'No registrada'}\n"
+                f"👥 **Cuadrilla:** {rc_extra['cuadrilla'] or 'No asignada'}\n"
+                f"📅 **Fecha solicitud:** {rc_extra['fecha_solicitud'] or 'No registrada'}\n"
+                f"🗓️ **Planificación:** {rc_extra['fecha_planificacion'] or 'No registrada'}\n"
+                f"📊 **Estado inspección:** {rc_extra['estado_insp'] or 'No registrado'}\n"
+                f"📋 **Tipo solicitud:** {rc_extra['tipo_solicitud'] or 'No registrado'}\n"
+                f"👤 **Cliente:** {rc_extra['cliente'] or 'No registrado'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 **Motivo solicitud:** {motivo or 'No registrado'}\n"
+                f"ℹ️ Asignado en recorrido pero sin registro en gestion_tramites"
+            )
+        else:
+            linea = (
+                f"━━━━━━━━━━━━━ #{i} ━━━━━━━━━━━━━\n"
+                f"📋 **Trámite:** {datos[0] or 'No registrado'}\n"
+                f"📄 **Solicitud:** {datos[1] or 'No registrado'}\n"
+                f"👥 **Cuadrilla:** {datos[2] or 'No registrada'}\n"
+                f"📅 **Ejecución:** {datos[3] or 'No registrada'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📝 **Observación:**\n{datos[4] or 'No registrada'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🧰 **Nota materiales:** {datos[5] or 'No registrada'}\n"
+                f"❌ **Motivo no ejecución:** {datos[6] or 'No registrado'}\n"
+                f"📋 **Detalle:** {datos[7] or 'No registrado'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📟 **Medidor actual:** {datos[8] or '?'} / {datos[9] or '?'}\n"
+                f"📊 **Contador:** {datos[10] or '?'} / {datos[11] or '?'}\n"
+                f"🆕 **Medidor nuevo:** {_fmt_sin_decimales(datos[12]) or '?'} / {_fmt_sin_decimales(datos[13]) or '?'}\n"
+                f"🔄 **Medidor retirado:** {_fmt_sin_decimales(datos[14]) or '?'} / {_fmt_sin_decimales(datos[15]) or '?'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📟 **Medidor N°:** {datos[8] or 'No registrado'}\n"
+                f"📋 **Motivo solicitud:** {motivo or 'No registrado'}"
+            )
         if i == 1:
             await update.message.reply_text(f"🔍 **CUENTA CONTRATO: {numero}**\n\n{linea}")
         else:

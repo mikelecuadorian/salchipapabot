@@ -277,11 +277,14 @@ def contar_registros(tabla):
 
 
 def buscar_por_cuenta_contrato_avanzado(cuenta_contrato, limite=10):
-    """Busca en recorrido_cuadrillas por cuenta_contrato, cruza con gestion_tramites"""
+    """Busca en recorrido_cuadrillas por cuenta_contrato, cruza con gestion_tramites.
+    Incluye trámites SIN gestión: datos=None + rc_extra con info de recorrido_cuadrillas."""
     cuenta = str(cuenta_contrato).strip().rstrip('.0')
     
     sql_rc = """
-        SELECT numero_tramite, cuenta_contrato, motivo_solicitud
+        SELECT numero_tramite, cuenta_contrato, motivo_solicitud,
+               numero_solicitud, cuadrilla, fecha_planificacion, fecha_ejecucion,
+               estado_insp, tipo_solicitud, fecha_solicitud, cliente
         FROM recorrido_cuadrillas 
         WHERE cuenta_contrato LIKE ? || '%'
         LIMIT ?
@@ -309,8 +312,19 @@ def buscar_por_cuenta_contrato_avanzado(cuenta_contrato, limite=10):
         """
         datos, _ = consultar_sqlite(sql_gt, (str(numero_tramite),))
         
-        if datos:
-            resultados.append((datos[0], cuenta_cto, motivo))
+        rc_extra = {
+            'numero_tramite': numero_tramite,
+            'numero_solicitud': rc[3],
+            'cuadrilla': rc[4],
+            'fecha_planificacion': rc[5],
+            'fecha_ejecucion': rc[6],
+            'estado_insp': rc[7],
+            'tipo_solicitud': rc[8],
+            'fecha_solicitud': rc[9],
+            'cliente': rc[10],
+        }
+        # datos=None si el trámite NO está gestionado
+        resultados.append((datos[0] if datos else None, cuenta_cto, motivo, rc_extra))
     
     return resultados if resultados else None
 

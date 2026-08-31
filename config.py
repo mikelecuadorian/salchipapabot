@@ -46,7 +46,7 @@ Responde de manera clara, concisa y en español."""
 
 # ========== CONFIGURACIÓN DEL BOT ==========
 # Límite de resultados por consulta
-MAX_RESULTADOS = 10
+MAX_RESULTADOS = 20
 
 # Longitud máxima de texto en respuestas
 MAX_TEXTO_LONGITUD = 200
