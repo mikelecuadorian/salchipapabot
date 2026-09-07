@@ -74,6 +74,27 @@ def buscar_medidor(nro_serie):
     return None
 
 # ============================================
+# BÚSQUEDAS EN TABLA medidores_retirados
+# ============================================
+
+def buscar_medidor_retirado(medidor):
+    """Busca en tabla medidores_retirados por número de medidor"""
+    numero = str(medidor).strip()
+    # Normalizar: quitar sufijo .0 si viene como float y espacios
+    numero_limpio = numero.replace('.0', '') if numero.endswith('.0') else numero
+    
+    sql = """
+        SELECT medidor, marca, lugar_entrega
+        FROM medidores_retirados
+        WHERE medidor = ?
+        LIMIT 1
+    """
+    resultado, _ = consultar_sqlite(sql, (numero_limpio,))
+    if resultado:
+        return resultado[0]
+    return None
+
+# ============================================
 # BÚSQUEDAS EN TABLA gestion_tramites
 # ============================================
 

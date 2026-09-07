@@ -34,7 +34,8 @@ from handlers import (
     cuenta_contrato_command, coordenadas_command,
     resumenayer_command, resumenmes_command, resumendia_command,
     sql_command, orden_sap_command,
-    resumen_reclamos_dia_command, datos_cuenta_contrato_command
+    resumen_reclamos_dia_command, datos_cuenta_contrato_command,
+    medidor_retirado_command
 )
 from database import (
     buscar_medidor, preguntar_bd
@@ -436,6 +437,7 @@ def main():
     # Registrar comandos
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("medidor", medidor_command))
+    app.add_handler(CommandHandler("medidor_retirado", medidor_retirado_command))
     app.add_handler(CommandHandler("tramite", tramite_command))
     app.add_handler(CommandHandler("solicitud", solicitud_command))
     app.add_handler(CommandHandler("medidor_avanzado", medidor_avanzado_command))

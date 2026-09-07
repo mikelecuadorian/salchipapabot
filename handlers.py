@@ -19,7 +19,8 @@ from database import (
     buscar_medidor, buscar_tramite, buscar_solicitud, 
     buscar_medidor_avanzado, buscar_por_cuenta_contrato,
     buscar_por_cuenta_contrato_avanzado, consultar_sqlite,
-    buscar_fotos_tramite, buscar_ultimo_por_cuenta_contrato
+    buscar_fotos_tramite, buscar_ultimo_por_cuenta_contrato,
+    buscar_medidor_retirado
 )
 import requests
 import os
@@ -128,6 +129,32 @@ async def medidor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(MEDIDOR_NO_ENCONTRADO_MSG.format(nro_serie))
     
     log(f"Comando /medidor {nro_serie} ejecutado")
+
+async def medidor_retirado_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /medidor_retirado NUMERO - Busca en tabla medidores_retirados"""
+    if not context.args:
+        await update.message.reply_text("🔢 Ejemplo: `/medidor_retirado 20230249290`")
+        return
+    
+    medidor = context.args[0]
+    await update.message.reply_text(MENSAJE_BUSCANDO)
+    
+    info = buscar_medidor_retirado(medidor)
+    
+    if info:
+        num, marca, lugar = info
+        respuesta = (
+            f"🔍 **MEDIDOR RETIRADO {medidor}**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔢 **Medidor:** {num or 'No registrado'}\n"
+            f"🏷️ **Marca:** {marca or 'No registrada'}\n"
+            f"📦 **Lugar de entrega:** {lugar or 'No registrado'}"
+        )
+        await update.message.reply_text(respuesta)
+    else:
+        await update.message.reply_text(MEDIDOR_NO_ENCONTRADO_MSG.format(medidor))
+    
+    log(f"Comando /medidor_retirado {medidor} ejecutado")
 
 async def tramite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /tramite NUMERO - Busca en recorrido_cuadrillas y gestion_tramites"""
