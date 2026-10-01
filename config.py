@@ -76,7 +76,7 @@ Bot de consultas para gestión de trámites, medidores y datos operativos del Co
 *Resúmenes:*
 📊 `/resumenayer` - Ejecutados del día anterior
 📊 `/resumendia` [dd/mm/aaaa] - Ejecutados de una fecha específica
-📊 `/resumenmes` - Ejecutados del mes hasta ayer
+📊 `/resumenmes` [mm/aaaa] - Ejecutados del mes actual o de un mes específico
 📊 `/resumen_reclamos_dia` [dd/mm/aaaa] - Reclamos RECL del día
 
 *Herramientas:*
@@ -87,6 +87,7 @@ Bot de consultas para gestión de trámites, medidores y datos operativos del Co
 `/tramite 269565885`
 `/solicitud 42743024`
 `/resumenayer`
+`/resumenmes 1/2026`
 `/preguntar cuántos trámites hizo Carlos Pérez`
 """
 
@@ -121,7 +122,7 @@ BOT_COMMANDS = {
     "preguntar": "Consulta en lenguaje natural a la base de datos",
     "resumenayer": "Ejecutados del día anterior",
     "resumendia": "Ejecutados de una fecha específica",
-    "resumenmes": "Ejecutados del mes hasta ayer",
+    "resumenmes": "Ejecutados del mes actual o de un mes específico (mm/aaaa)",
     "resumen_reclamos_dia": "Reclamos RECL del día",
     "sql": "Ejecutar consulta SQL directa"
 }

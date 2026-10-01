@@ -490,11 +490,11 @@ async def resumenayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # ===== 2. POR TIPO DE TRÁMITE =====
         tipo_result, _ = consultar_sqlite(f"""
-            SELECT codigo_cliente, COUNT(*) as total
+            SELECT tipo_solicitud, COUNT(*) as total
             FROM gestion_tramites
             WHERE DATE(fecha_ejecucion, 'localtime') = DATE('now', 'localtime', '-1 day')
-              AND codigo_cliente IS NOT NULL AND codigo_cliente != ''
-            GROUP BY codigo_cliente
+              AND tipo_solicitud IS NOT NULL AND tipo_solicitud != ''
+            GROUP BY tipo_solicitud
             ORDER BY total DESC
         """)
         tipos = tipo_result or []
@@ -522,11 +522,12 @@ async def resumenayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if tipos:
             lineas.append("🏷️  *POR TIPO DE TRÁMITE:*")
+            max_cant = max(r["total"] for r in tipos[:20])
             for row in tipos[:20]:
-                codigo = row["codigo_cliente"].strip() if row["codigo_cliente"] else "Sin código"
+                tipo = row["tipo_solicitud"].strip() if row["tipo_solicitud"] else "Sin tipo"
                 cant = row["total"]
-                barra = "█" * min(cant, 15) + (" ▸" + str(cant) if cant > 15 else f" {cant}")
-                lineas.append(f"▫️ `{codigo}` — {barra}")
+                barra = "█" * max(1, round(cant * 15 / max_cant)) + f" {cant}"
+                lineas.append(f"▫️ `{tipo}` — {barra}")
             resto = len(tipos) - 20
             if resto > 0:
                 lineas.append(f"   *… y {resto} tipos de trámite más*")
@@ -534,10 +535,11 @@ async def resumenayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if cuadrillas:
             lineas.append("👥 *POR CUADRILLA:*")
+            max_cant_cuad = max(r["total"] for r in cuadrillas)
             for row in cuadrillas:
                 cuad = row["cuadrilla"].strip() if row["cuadrilla"] else "Sin asignar"
                 cant = row["total"]
-                barra = "█" * min(cant, 15) + (" ▸" + str(cant) if cant > 15 else f" {cant}")
+                barra = "█" * max(1, round(cant * 15 / max_cant_cuad)) + f" {cant}"
                 lineas.append(f"▫️ {cuad} — {barra}")
             lineas.append("")
 
@@ -616,11 +618,11 @@ async def resumendia_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # ===== 2. POR TIPO DE TRÁMITE =====
         tipo_result, _ = consultar_sqlite(f"""
-            SELECT codigo_cliente, COUNT(*) as total
+            SELECT tipo_solicitud, COUNT(*) as total
             FROM gestion_tramites
             WHERE fecha_ejecucion LIKE '{fecha_str}%'
-              AND codigo_cliente IS NOT NULL AND codigo_cliente != ''
-            GROUP BY codigo_cliente
+              AND tipo_solicitud IS NOT NULL AND tipo_solicitud != ''
+            GROUP BY tipo_solicitud
             ORDER BY total DESC
         """)
         tipos = tipo_result or []
@@ -648,11 +650,12 @@ async def resumendia_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if tipos:
             lineas.append("🏷️  *POR TIPO DE TRÁMITE:*")
+            max_cant = max(r["total"] for r in tipos[:20])
             for row in tipos[:20]:
-                codigo = row["codigo_cliente"].strip() if row["codigo_cliente"] else "Sin código"
+                tipo = row["tipo_solicitud"].strip() if row["tipo_solicitud"] else "Sin tipo"
                 cant = row["total"]
-                barra = "█" * min(cant, 15) + (" ▸" + str(cant) if cant > 15 else f" {cant}")
-                lineas.append(f"▫️ `{codigo}` — {barra}")
+                barra = "█" * max(1, round(cant * 15 / max_cant)) + f" {cant}"
+                lineas.append(f"▫️ `{tipo}` — {barra}")
             resto = len(tipos) - 20
             if resto > 0:
                 lineas.append(f"   *… y {resto} tipos de trámite más*")
@@ -660,10 +663,11 @@ async def resumendia_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if cuadrillas:
             lineas.append("👥 *POR CUADRILLA:*")
+            max_cant_cuad = max(r["total"] for r in cuadrillas)
             for row in cuadrillas:
                 cuad = row["cuadrilla"].strip() if row["cuadrilla"] else "Sin asignar"
                 cant = row["total"]
-                barra = "█" * min(cant, 15) + (" ▸" + str(cant) if cant > 15 else f" {cant}")
+                barra = "█" * max(1, round(cant * 15 / max_cant_cuad)) + f" {cant}"
                 lineas.append(f"▫️ {cuad} — {barra}")
             lineas.append("")
 
@@ -683,52 +687,112 @@ async def resumendia_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def resumenmes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /resumenmes - Resumen de ejecutados del mes hasta ayer"""
-    await update.message.reply_text("📊 *Generando resumen del mes...*", parse_mode='Markdown')
+    """Comando /resumenmes [mm/aaaa] - Resumen de ejecutados de un mes (por defecto: el actual hasta ayer)"""
+    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+    hoy = datetime.now()
+    anio_actual, mes_actual = hoy.year, hoy.month
+    primer_mes_con_datos = (2024, 10)  # la BD arranca en octubre 2024
+
+    # ===== Parsear argumento opcional (mm/aaaa) =====
+    anio, mes = anio_actual, mes_actual
+    arg = context.args[0] if context.args else None
+
+    if arg is not None:
+        match = re.match(r'^(\d{1,2})[\/\-](\d{4})$', arg)
+        if not match:
+            await update.message.reply_text(
+                "❌ *Formato inválido.* Usa: `/resumenmes mm/aaaa`\n\n"
+                "Ejemplos:\n"
+                "`/resumenmes` → mes actual (hasta ayer)\n"
+                "`/resumenmes 1/2026` → enero 2026\n"
+                "`/resumenmes 12/2025` → diciembre 2025",
+                parse_mode='Markdown'
+            )
+            return
+
+        mes, anio = int(match.group(1)), int(match.group(2))
+
+        if not 1 <= mes <= 12:
+            await update.message.reply_text(
+                "❌ *Mes inválido.* Debe estar entre 1 y 12.\n"
+                "Ejemplo: `/resumenmes 1/2026`",
+                parse_mode='Markdown'
+            )
+            return
+
+        if (anio, mes) > (anio_actual, mes_actual):
+            await update.message.reply_text(
+                f"❌ *{meses[mes - 1].capitalize()} {anio} todavía no ha pasado.*\n"
+                f"El mes en curso es {meses[mes_actual - 1]} {anio_actual}.",
+                parse_mode='Markdown'
+            )
+            return
+
+        if (anio, mes) < primer_mes_con_datos:
+            await update.message.reply_text(
+                f"❌ *No hay datos anteriores a {meses[primer_mes_con_datos[1] - 1]} {primer_mes_con_datos[0]}.*",
+                parse_mode='Markdown'
+            )
+            return
+
+    # ===== Calcular rango del mes =====
+    inicio = datetime(anio, mes, 1)
+    es_mes_actual = (anio, mes) == (anio_actual, mes_actual)
+
+    if es_mes_actual:
+        fin = hoy - timedelta(days=1)
+        if fin < inicio:
+            mes_ant = inicio - timedelta(days=1)
+            await update.message.reply_text(
+                f"📅 *Hoy es 1 de {meses[mes_actual - 1]}:* este mes todavía no tiene días cerrados.\n\n"
+                f"Proba con `/resumenmes {mes_ant.month}/{mes_ant.year}` para ver "
+                f"{meses[mes_ant.month - 1].capitalize()} {mes_ant.year}.",
+                parse_mode='Markdown'
+            )
+            return
+    else:
+        # último día del mes pedido
+        mes_siguiente = datetime(anio + 1, 1, 1) if mes == 12 else datetime(anio, mes + 1, 1)
+        fin = mes_siguiente - timedelta(days=1)
+
+    inicio_str = inicio.strftime("%Y-%m-%d")
+    fin_str = fin.strftime("%Y-%m-%d")
+    nombre_mes = meses[mes - 1]
+    fecha_legible = f"{nombre_mes.capitalize()} {anio} (del 1 al {fin.day})"
+
+    await update.message.reply_text(f"📊 *Generando resumen de {fecha_legible}...*", parse_mode='Markdown')
 
     try:
-        # Calcular fechas
-        hoy = datetime.now()
-        ayer = hoy - timedelta(days=1)
-        meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
-                 "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-        nombre_mes = meses[ayer.month - 1]
-        fecha_legible = f"{nombre_mes.capitalize()} {ayer.year} (del 1 al {ayer.day})"
-
         # ===== 1. TOTAL EJECUTADOS DEL MES =====
         total_result, _ = consultar_sqlite("""
             SELECT COUNT(*) as total
             FROM gestion_tramites
-            WHERE DATE(fecha_ejecucion, 'localtime')
-              BETWEEN DATE('now', 'localtime', 'start of month')
-              AND DATE('now', 'localtime', '-1 day')
-        """)
+            WHERE DATE(fecha_ejecucion, 'localtime') BETWEEN ? AND ?
+        """, (inicio_str, fin_str))
         total = total_result[0]["total"] if total_result else 0
 
         # ===== 2. POR TIPO DE TRÁMITE =====
         tipo_result, _ = consultar_sqlite("""
-            SELECT codigo_cliente, COUNT(*) as total
+            SELECT tipo_solicitud, COUNT(*) as total
             FROM gestion_tramites
-            WHERE DATE(fecha_ejecucion, 'localtime')
-              BETWEEN DATE('now', 'localtime', 'start of month')
-              AND DATE('now', 'localtime', '-1 day')
-              AND codigo_cliente IS NOT NULL AND codigo_cliente != ''
-            GROUP BY codigo_cliente
+            WHERE DATE(fecha_ejecucion, 'localtime') BETWEEN ? AND ?
+              AND tipo_solicitud IS NOT NULL AND tipo_solicitud != ''
+            GROUP BY tipo_solicitud
             ORDER BY total DESC
-        """)
+        """, (inicio_str, fin_str))
         tipos = tipo_result or []
 
         # ===== 3. POR CUADRILLA =====
         cuadrilla_result, _ = consultar_sqlite("""
             SELECT cuadrilla, COUNT(*) as total
             FROM gestion_tramites
-            WHERE DATE(fecha_ejecucion, 'localtime')
-              BETWEEN DATE('now', 'localtime', 'start of month')
-              AND DATE('now', 'localtime', '-1 day')
+            WHERE DATE(fecha_ejecucion, 'localtime') BETWEEN ? AND ?
               AND cuadrilla IS NOT NULL AND cuadrilla != ''
             GROUP BY cuadrilla
             ORDER BY total DESC
-        """)
+        """, (inicio_str, fin_str))
         cuadrillas = cuadrilla_result or []
 
         # ===== ARMAR RESPUESTA =====
@@ -745,12 +809,12 @@ async def resumenmes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if tipos:
             lineas.append("🏷️  *POR TIPO DE TRÁMITE (Top 20):*")
-            max_bar = min(max(r["total"] for r in tipos[:TOP_LIMIT]), 20)
+            max_cant = max(r["total"] for r in tipos[:TOP_LIMIT])
             for row in tipos[:TOP_LIMIT]:
-                codigo = row["codigo_cliente"].strip() if row["codigo_cliente"] else "Sin código"
+                tipo = row["tipo_solicitud"].strip() if row["tipo_solicitud"] else "Sin tipo"
                 cant = row["total"]
-                barra = "█" * min(cant, max_bar) + (f" ▸{cant}" if cant > max_bar else f" {cant}")
-                lineas.append(f"▫️ `{codigo}` — {barra}")
+                barra = "█" * max(1, round(cant * 20 / max_cant)) + f" {cant}"
+                lineas.append(f"▫️ `{tipo}` — {barra}")
             resto = len(tipos) - TOP_LIMIT
             if resto > 0:
                 lineas.append(f"   *… y {resto} tipos de trámite más*")
@@ -758,23 +822,23 @@ async def resumenmes_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if cuadrillas:
             lineas.append("👥 *POR CUADRILLA:*")
-            max_bar = min(max(r["total"] for r in cuadrillas), 20)
+            max_cant_cuad = max(r["total"] for r in cuadrillas)
             for row in cuadrillas:
                 cuad = row["cuadrilla"].strip() if row["cuadrilla"] else "Sin asignar"
                 cant = row["total"]
-                barra = "█" * min(cant, max_bar) + (f" ▸{cant}" if cant > max_bar else f" {cant}")
+                barra = "█" * max(1, round(cant * 20 / max_cant_cuad)) + f" {cant}"
                 lineas.append(f"▫️ {cuad} — {barra}")
             lineas.append("")
 
         if total == 0:
-            lineas.append("😴 No se registraron ejecuciones este mes aún.")
+            lineas.append(f"😴 No se registraron ejecuciones en {nombre_mes} {anio}.")
             lineas.append("")
 
         lineas.append("━━━━━━━━━━━━━━━━━━━━━")
 
         respuesta = "\n".join(lineas)
         await enviar_en_partes(update, respuesta)
-        log(f"Comando /resumenmes - {total} ejecutados (mes)")
+        log(f"Comando /resumenmes {arg or '(mes actual)'} - {total} ejecutados")
 
     except Exception as e:
         log(f"❌ Error en /resumenmes: {e}")
