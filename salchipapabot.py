@@ -35,7 +35,7 @@ from handlers import (
     resumenayer_command, resumenmes_command, resumendia_command,
     sql_command, orden_sap_command,
     resumen_reclamos_dia_command, datos_cuenta_contrato_command,
-    medidor_retirado_command
+    medidor_retirado_command, observacion_sap_command
 )
 from database import (
     buscar_medidor, preguntar_bd
@@ -340,6 +340,21 @@ async def procesar_mensaje(update, context, mensaje):
         await orden_sap_command(update, context)
         return
     
+    # ===== DETECTAR COMANDO /observacion_sap (inline) =====
+    if mensaje.startswith('/observacion_sap'):
+        partes = mensaje.split(maxsplit=1)
+        if len(partes) < 2:
+            await update.message.reply_text(
+                "🔢 Ejemplo: `/observacion_sap 21970326`\n"
+                "Trae la Observación de la orden SAP (dirección correcta, teléfono de contacto, etc.).",
+                parse_mode='Markdown')
+            return
+        numero = partes[1].strip()
+        from handlers import observacion_sap_command
+        context.args = [numero]
+        await observacion_sap_command(update, context)
+        return
+    
     # ===== DETECTAR CONSULTAS DE MEDIDOR EN LENGUAJE NATURAL =====
     match_numero = re.search(r'\b(\d{7,11})\b', mensaje)
     if match_numero and any(p in mensaje.lower() for p in ["medidor", "cuadrilla", "tramite", "quién", "número", "de quién"]):
@@ -450,6 +465,7 @@ def main():
     app.add_handler(CommandHandler("resumendia", resumendia_command))
     app.add_handler(CommandHandler("sql", sql_command))
     app.add_handler(CommandHandler("orden_sap", orden_sap_command))
+    app.add_handler(CommandHandler("observacion_sap", observacion_sap_command))
     app.add_handler(CommandHandler("resumen_reclamos_dia", resumen_reclamos_dia_command))
     
     # Registrar manejadores de mensajes

@@ -24,6 +24,10 @@ from database import (
 )
 import requests
 import os
+import asyncio
+import json as _json
+import html as _html
+import fcntl
 
 MAX_TELEGRAM_MSG = 4000  # dejar margen de seguridad del límite 4096
 
@@ -964,6 +968,239 @@ async def orden_sap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log(f"❌ Error en /orden_sap: {e}")
         await update.message.reply_text(f"❌ Error al buscar la orden: {e}")
+
+
+# ==========================================================================
+# /observacion_sap  —  Observación de una orden SAP (dato que NO llega al ACIIS)
+# --------------------------------------------------------------------------
+# El texto lo extrae observacion_sap.py (Playwright/Chromium) DENTRO del
+# contenedor Ubuntu (proot): en Termux no hay navegador. El bot solo invoca el
+# wrapper observacion_sap.sh y formatea la respuesta.
+# Cache en observaciones_sap.db: positivos 24 h · "no existe" 1 h, para
+# responder al instante la 2ª vez y no castigar el SAP.
+# ==========================================================================
+OBS_WRAPPER = "/data/data/com.termux/files/home/salchipapabot/observacion_sap.sh"
+OBS_CACHE_DB = "/data/data/com.termux/files/home/salchipapabot/observaciones_sap.db"
+OBS_LOCK = "/data/data/com.termux/files/home/salchipapabot/.observacion_sap.lock"
+OBS_TTL_OK = 24 * 3600
+OBS_TTL_NEG = 3600
+
+
+def _obs_cache_init():
+    conn = sqlite3.connect(OBS_CACHE_DB)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS obs_ok (
+            numero TEXT PRIMARY KEY, tab TEXT, orden TEXT, cliente TEXT, cedula TEXT,
+            dir TEXT, cel TEXT, obs TEXT, capturado_en TEXT, ts REAL)""")
+        conn.execute("CREATE TABLE IF NOT EXISTS obs_neg (numero TEXT PRIMARY KEY, ts REAL)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _obs_cache_get(numero):
+    import time as _t
+    ahora = _t.time()
+    conn = sqlite3.connect(OBS_CACHE_DB)
+    conn.row_factory = sqlite3.Row
+    try:
+        r = conn.execute("SELECT * FROM obs_ok WHERE numero=?", (numero,)).fetchone()
+        if r and (ahora - (r["ts"] or 0)) <= OBS_TTL_OK:
+            return dict(r)
+        if r:
+            conn.execute("DELETE FROM obs_ok WHERE numero=?", (numero,)); conn.commit()
+        r2 = conn.execute("SELECT ts FROM obs_neg WHERE numero=?", (numero,)).fetchone()
+        if r2 and (ahora - (r2["ts"] or 0)) <= OBS_TTL_NEG:
+            return {"no_existe": True}
+    finally:
+        conn.close()
+    return None
+
+
+def _obs_cache_put_ok(d):
+    import time as _t
+    conn = sqlite3.connect(OBS_CACHE_DB)
+    try:
+        conn.execute("""INSERT OR REPLACE INTO obs_ok
+            (numero,tab,orden,cliente,cedula,dir,cel,obs,capturado_en,ts)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (d.get("num"), d.get("tab"), d.get("orden"), d.get("cliente"), d.get("cedula"),
+             d.get("dir"), d.get("cel"), d.get("obs"), d.get("capturado_en"), _t.time()))
+        conn.execute("DELETE FROM obs_neg WHERE numero=?", (d.get("num"),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _obs_cache_put_neg(numero):
+    import time as _t
+    conn = sqlite3.connect(OBS_CACHE_DB)
+    try:
+        conn.execute("INSERT OR REPLACE INTO obs_neg (numero, ts) VALUES (?,?)", (numero, _t.time()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _obs_formato(d):
+    e = _html.escape
+    return "\n".join([
+        f"📌 <b>OBSERVACIÓN SAP</b> — orden <code>{e(str(d.get('orden') or d.get('num')))}</code>",
+        f"🗂️ Bandeja: <b>{e(str(d.get('tab') or 'N/D'))}</b>",
+        "────────────────────",
+        f"🧑 <b>Cliente:</b> {e(str(d.get('cliente') or 'N/D'))}",
+        f"🪪 <b>Cédula:</b> {e(str(d.get('cedula') or 'N/D'))}",
+        f"🏠 <b>Dirección:</b> {e(str(d.get('dir') or 'N/D'))}",
+        f"📞 <b>Celular:</b> {e(str(d.get('cel') or 'N/D'))}",
+        "────────────────────",
+        "📝 <b>Observación:</b>",
+        e((d.get('obs') or '(sin observación)').strip()),
+    ])
+
+
+# --- Navegador "tibio" (daemon en 127.0.0.1): responde ~5 s vs ~20 s en frío ---
+OBS_WARM_SH = "/data/data/com.termux/files/home/salchipapabot/observacion_sap_warm.sh"
+OBS_WARM_PORT = 8754
+OBS_WARM_URL = f"http://127.0.0.1:{OBS_WARM_PORT}"
+
+
+def _obs_warm_pedir(numero, timeout=25):
+    """Pide la observación al daemon tibio. Devuelve dict si respondió; None si no
+    está corriendo / no respondió (→ se usa el camino frío)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{OBS_WARM_URL}/obs?nro={numero}", timeout=timeout) as r:
+            return _json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _obs_warm_arrancar():
+    """Arranca el daemon tibio (detached). Si ya responde /ping, no hace nada."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{OBS_WARM_URL}/ping", timeout=2):
+            return
+    except Exception:
+        pass
+    import subprocess as _sp
+    try:
+        _sp.Popen([OBS_WARM_SH], stdin=_sp.DEVNULL, stdout=_sp.DEVNULL,
+                  stderr=_sp.DEVNULL, start_new_session=True)
+    except Exception as e:
+        log(f"no pude arrancar el daemon tibio: {e}")
+
+
+async def observacion_sap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /observacion_sap NUMERO — Observación de la orden SAP (no llega al ACIIS)."""
+    if not context.args:
+        await update.message.reply_text(
+            "🔢 Ejemplo: `/observacion_sap 21970326`\n"
+            "Trae la *Observación* de la orden SAP (dirección correcta, teléfono de contacto, etc.).\n"
+            "Busca en POR ASIGNAR y EN TRATAMIENTO.",
+            parse_mode='Markdown')
+        return
+
+    numero = context.args[0].strip()
+    if not numero.isdigit():
+        await update.message.reply_text(f"❌ Número inválido: {numero}. Debe ser solo dígitos.")
+        return
+    numero = numero.lstrip('0') or numero
+
+    _obs_cache_init()
+    cache = _obs_cache_get(numero)
+    if cache is not None:
+        if cache.get("no_existe"):
+            await update.message.reply_text(
+                f"❌ La orden *{numero}* no está en la bandeja\n(ni POR ASIGNAR ni EN TRATAMIENTO).",
+                parse_mode='Markdown')
+            return
+        cache["num"] = numero
+        await enviar_en_partes(update, _obs_formato(cache), parse_mode='HTML')
+        log(f"/observacion_sap {numero} (cache)")
+        return
+
+    await update.message.reply_text(
+        "🔎 *Consultando SAP…* (la 1ª vez ~20 s; luego ~5 s)", parse_mode='Markdown')
+
+    # ---- 1) Intento TIBIO (daemon): ~5 s ----
+    tibio = await asyncio.to_thread(_obs_warm_pedir, numero)
+    if tibio is not None and tibio.get("motivo") != "error":
+        if tibio.get("ok"):
+            _obs_cache_put_ok(tibio)
+            await enviar_en_partes(update, _obs_formato(tibio), parse_mode='HTML')
+            log(f"/observacion_sap {numero}: OK tibio ({tibio.get('tab')})")
+        else:
+            _obs_cache_put_neg(numero)
+            await update.message.reply_text(
+                f"❌ La orden *{numero}* no está en la bandeja\n(ni POR ASIGNAR ni EN TRATAMIENTO).",
+                parse_mode='Markdown')
+            log(f"/observacion_sap {numero}: no_existe (tibio)")
+        return
+
+    # ---- 2) Camino FRÍO (Chromium nuevo ~20 s) ----
+    if not os.path.exists(OBS_WRAPPER):
+        await update.message.reply_text("❌ Falta el wrapper observacion_sap.sh en el bot.")
+        return
+
+    frio_usado = False
+    lf = open(OBS_LOCK, "w")
+    try:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            await update.message.reply_text("⏳ Ya hay una consulta SAP en curso. Intenta en unos segundos.")
+            return
+        frio_usado = True
+
+        proc = await asyncio.create_subprocess_exec(
+            OBS_WRAPPER, numero,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=220)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            await update.message.reply_text("⏱️ SAP tardó demasiado. Reintenta en un momento.")
+            log(f"/observacion_sap {numero}: timeout")
+            return
+
+        datos = None
+        for ln in out.decode("utf-8", "replace").splitlines():
+            if ln.startswith("@@OBS@@"):
+                try:
+                    datos = _json.loads(ln[len("@@OBS@@"):].strip())
+                except Exception:
+                    datos = None
+        if not datos:
+            await update.message.reply_text("❌ No obtuve respuesta del SAP. Reintenta.")
+            log(f"/observacion_sap {numero}: sin salida válida")
+            return
+
+        if not datos.get("ok"):
+            if datos.get("motivo") == "no_existe":
+                _obs_cache_put_neg(numero)
+                await update.message.reply_text(
+                    f"❌ La orden *{numero}* no está en la bandeja\n(ni POR ASIGNAR ni EN TRATAMIENTO).",
+                    parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ Error al consultar SAP: {datos.get('motivo')}")
+            log(f"/observacion_sap {numero}: {datos.get('motivo')}")
+            return
+
+        _obs_cache_put_ok(datos)
+        await enviar_en_partes(update, _obs_formato(datos), parse_mode='HTML')
+        log(f"/observacion_sap {numero}: OK frío ({datos.get('tab')})")
+    finally:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lf.close()
+        if frio_usado:
+            _obs_warm_arrancar()   # dejar el navegador tibio para la próxima consulta
 
 
 async def resumen_reclamos_dia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

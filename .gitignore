@@ -34,3 +34,6 @@ backups_paso2/
 debug_*.py
 sap_*.png
 sap_body.html
+
+# Lock runtime de /observacion_sap
+.observacion_sap.lock
