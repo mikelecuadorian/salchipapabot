@@ -231,7 +231,8 @@ def health_check():
     try:
         with sync_playwright() as pw:
             b = pw.chromium.launch(headless=True,
-                                   args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'])
+                                   args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+                        '--no-zygote', '--renderer-process-limit=1'])
             p = b.new_page()
             p.goto('about:blank', timeout=10000)
             b.close()
@@ -251,7 +252,8 @@ def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+                        '--no-zygote', '--renderer-process-limit=1']
         )
         page = browser.new_page(
             viewport={'width': 1920, 'height': 1080},
