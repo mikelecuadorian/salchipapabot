@@ -116,7 +116,8 @@ JS_FILAS = """() => { const o=[];
 JS_VO = """() => {
   const g=id=>{const e=document.getElementById(id); return e?e.value:null;};
   return {orden:g('VOAufnr-inner'), cliente:g('VOSolic-inner'), cedula:g('VOCedula-inner'),
-          dir:g('VOCalleNro-inner'), cel:g('VOTelfijoCel-inner'), obs:g('VOObservaciones-inner')};
+          dir:g('VOCalleNro-inner'), cel:g('VOTelfijoCel-inner'), obs:g('VOObservaciones-inner'),
+          tarif_aplic:g('VOTarifAplic-inner'), tarif_verif:g('VOTarifVerif-inner')};
 }"""
 JS_HAY_VO = "() => !!document.getElementById('VOObservaciones-inner')"
 JS_LOGIN_OK = "() => !!document.querySelector('#SupNavAsig')"

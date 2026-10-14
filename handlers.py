@@ -992,6 +992,13 @@ def _obs_cache_init():
         conn.execute("""CREATE TABLE IF NOT EXISTS obs_ok (
             numero TEXT PRIMARY KEY, tab TEXT, orden TEXT, cliente TEXT, cedula TEXT,
             dir TEXT, cel TEXT, obs TEXT, capturado_en TEXT, ts REAL)""")
+        # Migración: columnas de TARIFA (agregadas 2026-10-14). ALTER es idempotente
+        # con el try/except: si ya existen, sqlite lanza OperationalError.
+        for col in ("tarif_aplic", "tarif_verif"):
+            try:
+                conn.execute(f"ALTER TABLE obs_ok ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("CREATE TABLE IF NOT EXISTS obs_neg (numero TEXT PRIMARY KEY, ts REAL)")
         conn.commit()
     finally:
@@ -1022,10 +1029,11 @@ def _obs_cache_put_ok(d):
     conn = sqlite3.connect(OBS_CACHE_DB)
     try:
         conn.execute("""INSERT OR REPLACE INTO obs_ok
-            (numero,tab,orden,cliente,cedula,dir,cel,obs,capturado_en,ts)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (numero,tab,orden,cliente,cedula,dir,cel,obs,capturado_en,ts,tarif_aplic,tarif_verif)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (d.get("num"), d.get("tab"), d.get("orden"), d.get("cliente"), d.get("cedula"),
-             d.get("dir"), d.get("cel"), d.get("obs"), d.get("capturado_en"), _t.time()))
+             d.get("dir"), d.get("cel"), d.get("obs"), d.get("capturado_en"), _t.time(),
+             d.get("tarif_aplic"), d.get("tarif_verif")))
         conn.execute("DELETE FROM obs_neg WHERE numero=?", (d.get("num"),))
         conn.commit()
     finally:
@@ -1042,9 +1050,28 @@ def _obs_cache_put_neg(numero):
         conn.close()
 
 
+def _obs_tarifa(txt):
+    """Formatea un valor de tarifa SAP ('BTCRSD01O | BT Residencial') a
+    'BT Residencial (BTCRSD01O)'. Si viene vacío/NULL devuelve 'N/D'."""
+    if not txt:
+        return None
+    t = str(txt).strip()
+    if not t:
+        return None
+    if "|" in t:
+        partes = [p.strip() for p in t.split("|", 1)]
+        cod, desc = partes[0], partes[1] if len(partes) > 1 else ""
+        if desc and cod:
+            return f"{desc} ({cod})"
+        return desc or cod
+    return t
+
+
 def _obs_formato(d):
     e = _html.escape
-    return "\n".join([
+    verif = _obs_tarifa(d.get('tarif_verif'))
+    aplic = _obs_tarifa(d.get('tarif_aplic'))
+    lineas = [
         f"📌 <b>OBSERVACIÓN SAP</b> — orden <code>{e(str(d.get('orden') or d.get('num')))}</code>",
         f"🗂️ Bandeja: <b>{e(str(d.get('tab') or 'N/D'))}</b>",
         "────────────────────",
@@ -1053,9 +1080,22 @@ def _obs_formato(d):
         f"🏠 <b>Dirección:</b> {e(str(d.get('dir') or 'N/D'))}",
         f"📞 <b>Celular:</b> {e(str(d.get('cel') or 'N/D'))}",
         "────────────────────",
+    ]
+    # Tarifas: solo se muestran las que traen dato
+    if verif:
+        lineas.append(f"⚡ <b>Tarifa verificada:</b> {e(verif)}")
+    if aplic:
+        lineas.append(f"📋 <b>Tarifa aplicada:</b> {e(aplic)}")
+    if verif and aplic and verif != aplic:
+        lineas.append("⚠️ <i>La tarifa aplicada difiere de la verificada.</i>")
+    if not verif and not aplic:
+        lineas.append("⚡ <b>Tarifa:</b> N/D (SAP no la trae en esta orden)")
+    lineas += [
+        "────────────────────",
         "📝 <b>Observación:</b>",
         e((d.get('obs') or '(sin observación)').strip()),
-    ])
+    ]
+    return "\n".join(lineas)
 
 
 # --- Navegador "tibio" (daemon en 127.0.0.1): responde ~5 s vs ~20 s en frío ---
@@ -1096,7 +1136,8 @@ async def observacion_sap_command(update: Update, context: ContextTypes.DEFAULT_
     if not context.args:
         await update.message.reply_text(
             "🔢 Ejemplo: `/observacion_sap 21970326`\n"
-            "Trae la *Observación* de la orden SAP (dirección correcta, teléfono de contacto, etc.).\n"
+            "Trae la *Observación* de la orden SAP (dirección correcta, teléfono de contacto, etc.)\n"
+            "y la *Tarifa* (aplicada y verificada).\n"
             "Busca en POR ASIGNAR y EN TRATAMIENTO.",
             parse_mode='Markdown')
         return

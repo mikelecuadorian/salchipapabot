@@ -8,6 +8,7 @@ from openai import OpenAI
 import re
 import os
 import json
+import unicodedata
 import requests as http_requests
 
 # Ruta completa al rootfs de Ubuntu Proot
@@ -237,6 +238,19 @@ async def manejar_voz(update, context):
 # MANEJADOR DE MENSAJES DE TEXTO (CON DEEPSEEK + SQL)
 # =====================================================
 
+def _normalizar_comando(s):
+    """Quita tildes y pasa a minúsculas para comparar comandos.
+
+    El autocorrector del teclado convierte '/observacion_sap' en
+    '/observación_sap'; sin esto el mensaje no se reconoce como comando y cae
+    al manejador de lenguaje natural.
+    """
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s)
+        if not unicodedata.combining(c)
+    ).lower()
+
+
 async def responder(update, context):
     """Maneja mensajes de texto"""
     mensaje = update.message.text
@@ -250,9 +264,10 @@ async def responder(update, context):
 async def procesar_mensaje(update, context, mensaje):
     """Procesa un mensaje (texto directo o transcrito de audio)"""
     log(f"📩 Mensaje: {mensaje[:80]}...")
-    
+    _cmd = _normalizar_comando(mensaje)  # comparación de comandos sin tildes
+
     # ===== DETECTAR COMANDO /tramite (inline, por si CommandHandler no agarra) =====
-    if mensaje.startswith('/tramite'):
+    if _cmd.startswith('/tramite'):
         partes = mensaje.split(maxsplit=1)
         if len(partes) < 2:
             await update.message.reply_text("🔢 Ejemplo: `/tramite 269565885`")
@@ -264,7 +279,7 @@ async def procesar_mensaje(update, context, mensaje):
         return
     
     # ===== DETECTAR COMANDO /solicitud (inline) =====
-    if mensaje.startswith('/solicitud'):
+    if _cmd.startswith('/solicitud'):
         partes = mensaje.split(maxsplit=1)
         if len(partes) < 2:
             await update.message.reply_text("🔢 Ejemplo: `/solicitud 38545078`")
@@ -276,7 +291,7 @@ async def procesar_mensaje(update, context, mensaje):
         return
     
     # ===== DETECTAR COMANDO /coordenadas (inline) =====
-    if mensaje.startswith('/coordenadas'):
+    if _cmd.startswith('/coordenadas'):
         partes = mensaje.split(maxsplit=1)
         if len(partes) < 2:
             await update.message.reply_text("🔢 Ejemplo: `/coordenadas 201014401131`")
@@ -327,7 +342,7 @@ async def procesar_mensaje(update, context, mensaje):
         return
     
     # ===== DETECTAR COMANDO /orden_sap (inline) =====
-    if mensaje.startswith('/orden_sap'):
+    if _cmd.startswith('/orden_sap'):
         partes = mensaje.split(maxsplit=1)
         if len(partes) < 2:
             await update.message.reply_text("🔢 Ejemplo: `/orden_sap 21881541`\nBusca en las órdenes SAP por número de solicitud.")
@@ -341,7 +356,7 @@ async def procesar_mensaje(update, context, mensaje):
         return
     
     # ===== DETECTAR COMANDO /observacion_sap (inline) =====
-    if mensaje.startswith('/observacion_sap'):
+    if _cmd.startswith('/observacion_sap'):
         partes = mensaje.split(maxsplit=1)
         if len(partes) < 2:
             await update.message.reply_text(
