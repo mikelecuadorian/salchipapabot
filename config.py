@@ -110,21 +110,27 @@ DB_CONNECTION_TIMEOUT = 10
 DB_RETRY_ATTEMPTS = 3
 
 # ========== COMANDOS DEL BOT ==========
+# Lista que Telegram muestra al escribir "/" en el chat (setMyCommands).
+# OJO: descripciones cortas a propósito. Telegram OCULTA el menú si la lista
+# no cabe en 100 caracteres de ancho por fila -> máximo ~18-20 chars por desc.
 BOT_COMMANDS = {
-    "start": "Mensaje de bienvenida",
-    "medidor": "Buscar medidor por número de serie (bodega del Consorcio ART)",
-    "tramite": "Buscar trámite por número",
-    "solicitud": "Buscar solicitud por número",
-    "medidor_avanzado": "Búsqueda avanzada en cualquier campo",
-    "cuenta_contrato": "Búsqueda por cuenta contrato (muestra medidor N°)",
-    "coordenadas": "Coordenadas CNEL y GPS en Google Maps",
-    "orden_sap": "Buscar orden SAP por número de solicitud",
-    "preguntar": "Consulta en lenguaje natural a la base de datos",
-    "resumenayer": "Ejecutados del día anterior",
-    "resumendia": "Ejecutados de una fecha específica",
-    "resumenmes": "Ejecutados del mes actual o de un mes específico (mm/aaaa)",
+    "start": "Iniciar el bot",
+    "medidor": "Medidor por N° de serie",
+    "tramite": "Trámite por número",
+    "solicitud": "Solicitud por número",
+    "cuenta_contrato": "Buscar por cuenta contrato",
+    "datos_cuenta_contrato": "Datos del cliente",
+    "coordenadas": "Coordenadas en Google Maps",
+    "medidor_avanzado": "Búsqueda en 12 campos",
+    "medidor_retirado": "Medidor retirado",
+    "orden_sap": "Orden SAP por solicitud",
+    "observacion_sap": "Observación SAP",
+    "preguntar": "Preguntar en lenguaje natural",
+    "resumenayer": "Ejecutados de ayer",
+    "resumendia": "Ejecutados de una fecha",
+    "resumenmes": "Ejecutados de un mes",
     "resumen_reclamos_dia": "Reclamos RECL del día",
-    "sql": "Ejecutar consulta SQL directa"
+    "sql": "Consulta SQL directa",
 }
 
 # ========== VALIDACIÓN ==========

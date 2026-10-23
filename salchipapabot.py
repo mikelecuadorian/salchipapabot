@@ -4,6 +4,7 @@
 # =====================================================
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import BotCommand
 from openai import OpenAI
 import re
 import os
@@ -26,7 +27,7 @@ from config import (
     DEEPSEEK_SYSTEM_PROMPT, DEEPSEEK_MODEL, DEEPSEEK_TEMPERATURE,
     DEEPSEEK_MAX_TOKENS, DEEPSEEK_TIMEOUT, MAX_MESSAGE_LENGTH,
     MENSAJE_ERROR, MENSAJE_DEEPSEEK, MEDIDOR_NO_ENCONTRADO_MSG,
-    validar_configuracion
+    BOT_COMMANDS, validar_configuracion
 )
 from utils import log, limpiar_logs_si_es_necesario
 from handlers import (
@@ -457,12 +458,25 @@ async def preguntar_command(update, context):
 # FUNCIÓN PRINCIPAL
 # =====================================================
 
+async def registrar_menu_comandos(app):
+    """Registra el menú de comandos que Telegram muestra al escribir '/'.
+    Se ejecuta una sola vez al arrancar (post_init). Si falla, el bot sigue
+    funcionando igual: el menú es cosmético, no afecta a los handlers.
+    """
+    try:
+        comandos = [BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS.items()]
+        await app.bot.set_my_commands(comandos)
+        log(f"📋 Menú de comandos registrado en Telegram ({len(comandos)} comandos)")
+    except Exception as e:
+        log(f"⚠️ No se pudo registrar el menú de comandos: {e}")
+
+
 def main():
     # Limpiar logs al iniciar
     limpiar_logs_si_es_necesario()
     
     # Crear la aplicación
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(registrar_menu_comandos).build()
     
     # Registrar comandos
     app.add_handler(CommandHandler("start", start))
