@@ -79,4 +79,4 @@ Los datos se cargan automáticamente vía cron usando `no_agent` scripts (sin co
 
 ---
 
-*Proyecto personal — gestión de medidores LaCostaTech 🇪🇨*
+*Proyecto personal — gestión de medidores SalchipapaBot 🇪🇨*
