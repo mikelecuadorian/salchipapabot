@@ -37,3 +37,7 @@ sap_body.html
 
 # Lock runtime de /observacion_sap
 .observacion_sap.lock
+
+# Capturas de Playwright (asignación AFlow)
+asignacion/tools/aflow_shots/
+asignacion/__pycache__/
