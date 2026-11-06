@@ -6,10 +6,17 @@
 import datetime
 import os
 import gzip
-from config import LOG_PATH, LOG_TO_CONSOLE, LOG_TO_FILE, LOG_MAX_SIZE_MB, LOG_BACKUP_COUNT
+from config import (LOG_PATH, LOG_TO_CONSOLE, LOG_TO_FILE, LOG_MAX_SIZE_MB,
+                    LOG_BACKUP_COUNT, LOG_CHEQUEO_CADA)
+
+# Contador de líneas escritas desde la última comprobación de tamaño.
+# Vive en memoria: el stat() del archivo cuesta I/O y hacerlo por cada línea
+# sería caro en un bot que loguea mucho.
+_contador_log = 0
 
 def log(mensaje):
     """Registra un mensaje en el log (consola y/o archivo)"""
+    global _contador_log
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     linea = f"[{timestamp}] {mensaje}"
     
@@ -22,6 +29,14 @@ def log(mensaje):
                 f.write(linea + "\n")
         except Exception as e:
             print(f"Error escribiendo log: {e}")
+            return
+        # La comprobación de tamaño se hacía SOLO al arrancar el bot. Como el
+        # proceso puede pasar meses vivo (este llevaba 5), el log crecía sin
+        # límite. Ahora se revisa cada LOG_CHEQUEO_CADA líneas.
+        _contador_log += 1
+        if _contador_log >= LOG_CHEQUEO_CADA:
+            _contador_log = 0
+            limpiar_logs_si_es_necesario()
 
 def limpiar_logs_si_es_necesario():
     """Verifica y limpia logs si exceden el tamaño máximo"""

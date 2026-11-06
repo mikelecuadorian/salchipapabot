@@ -100,10 +100,17 @@ MENSAJE_DEEPSEEK = "🤔 Consultando a DeepSeek..."
 MEDIDOR_NO_ENCONTRADO_MSG = "❌ El número {} no pertenece al Consorcio ART. Por favor, verificá el número e intentá nuevamente."
 
 # ========== CONFIGURACIÓN DE LOGS ==========
-LOG_MAX_SIZE_MB = 100
+# 100 MB era demasiado para este disco (al 80% de uso): el log podía crecer a
+# 500 MB entre las 5 generaciones antes de que gzip las redujera. Con 20 MB el
+# peor caso son ~100 MB en crudo y ~10 MB comprimidos.
+LOG_MAX_SIZE_MB = 20
 LOG_BACKUP_COUNT = 5
 LOG_TO_CONSOLE = True
 LOG_TO_FILE = True
+# Cada cuántas líneas se comprueba el tamaño. Antes la única comprobación era
+# al arrancar el bot; como el proceso llevaba 5 meses vivo, el log llegó a
+# 28 MB sin rotar nunca. Un contador en memoria evita un stat() por línea.
+LOG_CHEQUEO_CADA = 500
 
 # ========== CONFIGURACIÓN DE BASE DE DATOS ==========
 DB_CONNECTION_TIMEOUT = 10
@@ -126,6 +133,7 @@ BOT_COMMANDS = {
     "orden_sap": "Orden SAP por solicitud",
     "observacion_sap": "Observación SAP",
     "preguntar": "Preguntar en lenguaje natural",
+    "manual": "Preguntar al manual CNEL",
     "resumenayer": "Ejecutados de ayer",
     "resumendia": "Ejecutados de una fecha",
     "resumenmes": "Ejecutados de un mes",
