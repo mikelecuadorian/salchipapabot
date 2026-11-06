@@ -162,8 +162,52 @@ def buscar_medidor_avanzado(numero_medidor):
 # BÚSQUEDAS COMBINADAS (recorrido_cuadrillas + gestion_tramites)
 # ============================================
 
+SIN_OBSERVACION = "SIN NINGUNA OBSERVACION"
+
+
+def _vacio(valor):
+    """True si el campo es None, cadena vacía o solo espacios."""
+    return valor is None or not str(valor).strip()
+
+
+def formatear_observaciones(observacion_gestion=None, motivo_no_ejecucion=None,
+                            detalle_no_ejecucion=None):
+    """Bloque de observaciones para /tramite, /solicitud y /cuenta_contrato.
+
+    Reglas (pedido de Miguel, 2026-11-06):
+      · Si HAY observacion_gestion -> se muestra tal cual (y, si existen, motivo y
+        detalle de no ejecución como líneas adicionales, porque un trámite puede
+        estar postergado Y tener trabajo registrado).
+      · Si NO hay observacion_gestion pero SÍ motivo/detalle de no ejecución ->
+        se muestran esos dos: es el caso típico de `se_posterga = 1`
+        (motivo_no_ejecucion 100 % lleno, detalle 93,4 %).
+      · Si no hay NINGUNO de los tres -> "SIN NINGUNA OBSERVACION".
+    """
+    hay_obs = not _vacio(observacion_gestion)
+    hay_motivo = not _vacio(motivo_no_ejecucion)
+    hay_detalle = not _vacio(detalle_no_ejecucion)
+
+    if not hay_obs and not hay_motivo and not hay_detalle:
+        return f"⚠️ **{SIN_OBSERVACION}**"
+
+    partes = []
+    if hay_obs:
+        partes.append(f"📝 **Observación:**\n{str(observacion_gestion).strip()}")
+    else:
+        partes.append("📝 **Observación:** No registrada")
+    if hay_motivo:
+        partes.append(f"❌ **Motivo no ejecución:** {str(motivo_no_ejecucion).strip()}")
+    if hay_detalle:
+        partes.append(f"📋 **Detalle no ejecución:** {str(detalle_no_ejecucion).strip()}")
+    return "\n".join(partes)
+
+
 def buscar_tramite(numero_tramite):
-    """Busca en recorrido_cuadrillas y gestion_tramites"""
+    """Busca en recorrido_cuadrillas y gestion_tramites
+
+    Devuelve (recorrido, observaciones) donde `observaciones` es una lista de
+    tuplas (observacion_gestion, motivo_no_ejecucion, detalle_no_ejecucion).
+    """
     sql_rec = """
         SELECT numero_solicitud, tipo_solicitud, cuadrilla, fecha_ejecucion,
                cuenta_contrato
@@ -175,7 +219,7 @@ def buscar_tramite(numero_tramite):
     
     if recorrido:
         sql_obs = """
-            SELECT observacion_gestion
+            SELECT observacion_gestion, motivo_no_ejecucion, detalle_no_ejecucion
             FROM gestion_tramites 
             WHERE numero_tramite = ?
             LIMIT 1
@@ -186,7 +230,8 @@ def buscar_tramite(numero_tramite):
     # Si no está en recorrido_cuadrillas, buscar directamente en gestion_tramites
     sql_gt = """
         SELECT numero_solicitud, tipo_solicitud, cuadrilla, fecha_ejecucion,
-               cuenta_contrato, observacion_gestion
+               cuenta_contrato, observacion_gestion, motivo_no_ejecucion,
+               detalle_no_ejecucion
         FROM gestion_tramites 
         WHERE numero_tramite = ?
         LIMIT 1
@@ -196,14 +241,18 @@ def buscar_tramite(numero_tramite):
         r = resultado[0]
         # Devolver en el mismo formato: (numero_solicitud, tipo, cuadrilla, fecha, cuenta_contrato)
         recorrido = [(r[0], r[1], r[2], r[3], r[4])]
-        observacion = [(r[5],)]
+        observacion = [(r[5], r[6], r[7])]
         return recorrido, observacion
     
     return None, None
 
 
 def buscar_solicitud(numero_solicitud):
-    """Busca en recorrido_cuadrillas y gestion_tramites por numero_solicitud"""
+    """Busca en recorrido_cuadrillas y gestion_tramites por numero_solicitud
+
+    Devuelve (recorrido, observaciones) donde `observaciones` es una lista de
+    tuplas (observacion_gestion, motivo_no_ejecucion, detalle_no_ejecucion).
+    """
     sql_rec = """
         SELECT numero_tramite, tipo_solicitud, cuadrilla, fecha_ejecucion,
                cuenta_contrato
@@ -216,7 +265,7 @@ def buscar_solicitud(numero_solicitud):
     if recorrido:
         numero_tramite = recorrido[0][0]
         sql_obs = """
-            SELECT observacion_gestion
+            SELECT observacion_gestion, motivo_no_ejecucion, detalle_no_ejecucion
             FROM gestion_tramites 
             WHERE numero_tramite = ?
             LIMIT 1
@@ -227,7 +276,8 @@ def buscar_solicitud(numero_solicitud):
     # Si no está en recorrido_cuadrillas, buscar en gestion_tramites
     sql_gt = """
         SELECT numero_tramite, tipo_solicitud, cuadrilla, fecha_ejecucion,
-               cuenta_contrato, observacion_gestion
+               cuenta_contrato, observacion_gestion, motivo_no_ejecucion,
+               detalle_no_ejecucion
         FROM gestion_tramites 
         WHERE numero_solicitud = ?
         LIMIT 1
@@ -237,7 +287,7 @@ def buscar_solicitud(numero_solicitud):
         r = resultado[0]
         # Devolver en el mismo formato: (numero_tramite, tipo, cuadrilla, fecha, cuenta_contrato)
         recorrido = [(r[0], r[1], r[2], r[3], r[4])]
-        observacion = [(r[5],)]
+        observacion = [(r[5], r[6], r[7])]
         return recorrido, observacion
     
     return None, None

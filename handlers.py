@@ -20,7 +20,7 @@ from database import (
     buscar_medidor_avanzado, buscar_por_cuenta_contrato,
     buscar_por_cuenta_contrato_avanzado, consultar_sqlite,
     buscar_fotos_tramite, buscar_ultimo_por_cuenta_contrato,
-    buscar_medidor_retirado
+    buscar_medidor_retirado, formatear_observaciones
 )
 import requests
 import os
@@ -176,7 +176,8 @@ async def tramite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     r = recorrido[0]
-    obs = observacion[0][0] if observacion else "No registrada"
+    obs_tuple = observacion[0] if observacion else (None, None, None)
+    obs = formatear_observaciones(*obs_tuple)
     cuenta_raw = r[4]
     if cuenta_raw:
         try:
@@ -195,7 +196,7 @@ async def tramite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📅 **Fecha ejecución:** {r[3] or 'No registrada'}\n"
         f"🔢 **Cuenta contrato:** {cuenta}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 **Observación:**\n{obs}"
+        f"{obs}"
     )
     await update.message.reply_text(respuesta)
     log(f"Comando /tramite {numero} ejecutado")
@@ -220,7 +221,8 @@ async def solicitud_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     r = recorrido[0]
-    obs = observacion[0][0] if observacion else "No registrada"
+    obs_tuple = observacion[0] if observacion else (None, None, None)
+    obs = formatear_observaciones(*obs_tuple)
     cuenta_raw = r[4]
     if cuenta_raw:
         try:
@@ -239,7 +241,7 @@ async def solicitud_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📅 **Fecha ejecución:** {r[3] or 'No registrada'}\n"
         f"🔢 **Cuenta contrato:** {cuenta}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 **Observación:**\n{obs}"
+        f"{obs}"
     )
     await update.message.reply_text(respuesta)
     log(f"Comando /solicitud {numero} ejecutado")
@@ -344,6 +346,7 @@ async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_
                 f"ℹ️ Asignado en recorrido pero sin registro en gestion_tramites"
             )
         else:
+            obs_bloque = formatear_observaciones(datos[4], datos[6], datos[7])
             linea = (
                 f"━━━━━━━━━━━━━ #{i} ━━━━━━━━━━━━━\n"
                 f"📋 **Trámite:** {datos[0] or 'No registrado'}\n"
@@ -351,11 +354,9 @@ async def cuenta_contrato_command(update: Update, context: ContextTypes.DEFAULT_
                 f"👥 **Cuadrilla:** {datos[2] or 'No registrada'}\n"
                 f"📅 **Ejecución:** {datos[3] or 'No registrada'}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📝 **Observación:**\n{datos[4] or 'No registrada'}\n"
+                f"{obs_bloque}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🧰 **Nota materiales:** {datos[5] or 'No registrada'}\n"
-                f"❌ **Motivo no ejecución:** {datos[6] or 'No registrado'}\n"
-                f"📋 **Detalle:** {datos[7] or 'No registrado'}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📟 **Medidor actual:** {datos[8] or '?'} / {datos[9] or '?'}\n"
                 f"📊 **Contador:** {datos[10] or '?'} / {datos[11] or '?'}\n"
