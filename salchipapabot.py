@@ -9,8 +9,13 @@ from openai import OpenAI
 import re
 import os
 import json
+import sys
 import unicodedata
 import requests as http_requests
+
+# RAG del manual CNEL (manual_rag.py / manual_bot.py viven aquí)
+if "/root/rag_manual" not in sys.path:
+    sys.path.insert(0, "/root/rag_manual")
 
 # Ruta completa al rootfs de Ubuntu Proot
 PROOT_ROOTFS = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubuntu/rootfs"
@@ -30,6 +35,68 @@ from config import (
     BOT_COMMANDS, validar_configuracion
 )
 from utils import log, limpiar_logs_si_es_necesario
+
+
+# =====================================================
+# TIMESTAMP EN STDERR / TRACEBACKS  (arreglo 2026-11-02)
+# =====================================================
+# PROBLEMA: `utils.log()` ya pone [fecha hora] a todo lo que loguea el bot,
+# pero las EXCEPCIONES de Python las escribe el propio intérprete (y el
+# traceback de asyncio/telegram) directo a stderr. El `run` del servicio
+# redirige stderr al mismo archivo (> 2>&1), así que quedaban líneas SIN
+# fecha mezcladas: 1.961 de 2.433 líneas del log no tenían timestamp — y
+# eran justo las de los ERRORES, lo que más se necesita fechar.
+#
+# SOLUCIÓN: se envuelve sys.stderr en un objeto que parte por líneas y
+# escribe cada una por `log()`. Así TODO (tracebacks, warnings, el "No error
+# handlers are registered") sale con [YYYY-MM-DD HH:MM:SS].
+class _StderrConTimestamp:
+    """Envuelve stderr para que cada línea salga con timestamp vía log().
+
+    Se escribe línea por línea (no por bloque) para que las trazas de varias
+    líneas —cada `File "...", line N`— queden todas fechadas. `write` imprime
+    SIEMPRE la fecha real del momento de la escritura; `flush` es no-op
+    porque log() ya abre/cierra el archivo en cada llamada.
+    """
+
+    def __init__(self, original):
+        self._original = original
+        self._buffer = ""
+
+    def write(self, texto):
+        if not texto:
+            return 0
+        self._buffer += texto
+        while "\n" in self._buffer:
+            linea, self._buffer = self._buffer.split("\n", 1)
+            if linea.strip():
+                try:
+                    log(linea)
+                except Exception:
+                    self._original.write(linea + "\n")
+        return len(texto)
+
+    def flush(self):
+        # Resto sin salto de línea: si quedó algo, se escribe (también fechado)
+        if self._buffer.strip():
+            try:
+                log(self._buffer)
+            except Exception:
+                self._original.write(self._buffer)
+            self._buffer = ""
+
+    def fileno(self):
+        return self._original.fileno()
+
+    def isatty(self):
+        return False
+
+    def __getattr__(self, nombre):
+        return getattr(self._original, nombre)
+
+
+sys.stderr = _StderrConTimestamp(sys.stderr)
+
 from handlers import (
     start, medidor_command, tramite_command, 
     solicitud_command, medidor_avanzado_command, 
@@ -455,6 +522,56 @@ async def preguntar_command(update, context):
 
 
 # =====================================================
+# COMANDO /manual — RAG del manual CNEL (cláusulas + figuras)
+# =====================================================
+
+async def manual_command(update, context):
+    """Comando /manual - pregunta al manual MN-COM-AC-001 V3.
+
+    RAG local: 346 cláusulas + 28 figuras del Anexo 1.
+    DeepSeek redacta la respuesta pero SOLO con las cláusulas recuperadas.
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "📕 *Pregúntale al manual CNEL*\n\n"
+            "Ejemplos:\n"
+            "`/manual cuántos medidores bornera para 8 en un predio`\n"
+            "`/manual hasta cuántos amperios se puede usar una bornera`\n"
+            "`/manual qué altura debe tener el medidor`\n\n"
+            "_Busca en las 346 cláusulas y en las 28 figuras del Anexo 1, "
+            "y responde citando numeral y página._",
+            parse_mode='Markdown'
+        )
+        return
+
+    mensaje = " ".join(context.args)
+    await update.message.reply_text("📕 *Buscando en el manual...*", parse_mode='Markdown')
+
+    try:
+        import manual_bot
+        r = manual_bot.redactar(mensaje, cliente, DEEPSEEK_MODEL,
+                                temperature=DEEPSEEK_TEMPERATURE,
+                                max_tokens=DEEPSEEK_MAX_TOKENS)
+
+        # Texto principal (sin parse_mode por si el manual trae asteriscos)
+        await update.message.reply_text(r["texto"])
+
+        # Planos: link, NO MEDIA (MEDIA falla desde la tablet a este chat)
+        for f in r["figuras"][:3]:
+            if f.get("url"):
+                await update.message.reply_text(
+                    f"📐 *{f['id']}* — {f['titulo']}\n"
+                    f"_{f['dimensiones']}_\n{f['url']}",
+                    parse_mode='Markdown'
+                )
+        log(f"✅ /manual respondido ({len(r['fuentes'])} fuentes)")
+
+    except Exception as e:
+        log(f"❌ Error en /manual: {e}")
+        await update.message.reply_text(f"❌ Error consultando el manual: {e}")
+
+
+# =====================================================
 # FUNCIÓN PRINCIPAL
 # =====================================================
 
@@ -489,6 +606,7 @@ def main():
     app.add_handler(CommandHandler("datos_cuenta_contrato", datos_cuenta_contrato_command))
     app.add_handler(CommandHandler("coordenadas", coordenadas_command))
     app.add_handler(CommandHandler("preguntar", preguntar_command))
+    app.add_handler(CommandHandler("manual", manual_command))
     app.add_handler(CommandHandler("resumenayer", resumenayer_command))
     app.add_handler(CommandHandler("resumenmes", resumenmes_command))
     app.add_handler(CommandHandler("resumendia", resumendia_command))
@@ -502,7 +620,34 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
     
     # Iniciar el bot
-    log("🤖 SalchipapaBot iniciado (con SQL natural y audio)")
+    # Contexto del arranque: sin esto el log solo dice "iniciado" y no hay
+    # forma de saber si fue un reinicio del watchdog, un crash o un deploy.
+    # `runsv` reinicia el proceso solo, así que el PID es la pista más útil:
+    # PID distinto = proceso nuevo. UP_TIME separa "crash inmediato" de
+    # "corrió días y lo mataron".
+    try:
+        with open("/proc/uptime") as _f:
+            _uptime_s = int(float(_f.read().split()[0]))
+        _uptime_txt = f"{_uptime_s // 86400}d {(_uptime_s % 86400) // 3600}h {(_uptime_s % 3600) // 60}m"
+    except Exception:
+        # En PRoot/Android /proc/uptime no siempre es legible. Plan B:
+        # /proc/stat trae 'btime' (epoch del arranque) en casi todo Android.
+        try:
+            import time as _t
+            _btime = None
+            with open("/proc/stat") as _f:
+                for _l in _f:
+                    if _l.startswith("btime"):
+                        _btime = int(_l.split()[1])
+                        break
+            if _btime:
+                _uptime_s = int(_t.time()) - _btime
+                _uptime_txt = f"{_uptime_s // 86400}d {(_uptime_s % 86400) // 3600}h {(_uptime_s % 3600) // 60}m"
+            else:
+                _uptime_txt = "desconocido"
+        except Exception:
+            _uptime_txt = "desconocido"
+    log(f"🤖 SalchipapaBot iniciado (con SQL natural y audio) · pid={os.getpid()} · equipo arriba {_uptime_txt}")
     log("📊 Base de datos conectada")
     log("🎤 Soporte de audio activado")
     log("🚀 Bot corriendo...")
