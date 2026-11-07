@@ -264,6 +264,43 @@ CUENTAS_CONTRATO = {
     #   NUEVO. OJO: es un RECLAMO, no una instalación — Bryan Acosta no tiene
     #   nada que ver con ese historial.
     "201015467487": "Planificar y ASIGNAR a la cuadrilla BRYAN ACOSTA",
+    # 2026-10-26 · pedido de Miguel: si sale un trámite en esta cuenta,
+    # planificar y asignar a la cuadrilla JIMMY VELIZ (nombre EXACTO en
+    # CUADRILLA_CEDULA, céd. 0923112445).
+    # Verificado al agregarla: cuenta `200048101535` (cliente GLADIS RAQUEL
+    # BORJA ANDACHI) YA tenía 1 trámite — `344654232` (32 - Factibilidad de
+    # servicio, 14-oct), EJECUTADO (accion_ejecutada=SI, estado 1 - Liberados)
+    # por la cuadrilla CARLOS PEREZ. Se sembró en el estado (avisados +
+    # ejecutados) para que NO dispare aviso falso con trámite viejo; el próximo
+    # aviso será por un trámite NUEVO que cree CNEL.
+    "200048101535": "Planificar y ASIGNAR a la cuadrilla JIMMY VELIZ",
+    # 2026-10-27 · pedido de Miguel: cuenta nueva → si sale un trámite,
+    # planificar y ASIGNAR a la cuadrilla CARLOS MIRANDA MOLESTINA (nombre
+    # EXACTO en CUADRILLA_CEDULA, céd. 0928817774).
+    # Verificado al agregarla: cuenta `201020900522` (cliente MARIA FERNANDA
+    # POVEDA SOLIS, URB. DURANCITY MZ-01 SL-11, DURÁN) YA tenía 1 trámite —
+    # `345153667` (32 - Factibilidad de servicio, motivo INSPECCIONES,
+    # 22-oct), EJECUTADO el 23-oct a las 15:42 por CARLOS MIRANDA MOLESTINA
+    # (resultado: "Todo OK listo para instalar medidor tipo socket en
+    # tablero"). Se sembró en el estado (avisados + ejecutados) para que NO
+    # dispare aviso falso con el trámite viejo; el próximo aviso será la
+    # INSTALACIÓN que cree CNEL.
+    "201020900522": "Planificar y ASIGNAR a la cuadrilla CARLOS MIRANDA MOLESTINA",
+    # 2026-10-28 · pedido de Miguel: si sale un trámite en esta cuenta, planificar
+    # y ASIGNAR a la cuadrilla CARLOS PEREZ (céd. 0926550781). Verificado al
+    # agregarla: cuenta `201020566448` (cliente ESTELA VIVIANA NAULA LOPEZ,
+    # DURÁN ELOY ALFARO) YA tenía 1 trámite — `343642807` (32 - Factibilidad
+    # de servicio, analizado 23-sep, EJECUTADO 25-sep-2026) por la cuadrilla
+    # JIMMY VELIZ. Se siembra en el estado (avisados + ejecutados) para que NO
+    # dispare aviso falso con ese trámite cerrado; el próximo aviso será por un
+    # trámite NUEVO que cree CNEL.
+    "201020566448": "Planificar y ASIGNAR a la cuadrilla CARLOS PEREZ",
+    # 2026-10-30 · pedido de Miguel: si sale un trámite en esta cuenta, planificar
+    # y ASIGNAR a la cuadrilla JULIO CUZCO (nombre EXACTO en CUADRILLA_CEDULA,
+    # céd. 0919327783). Verificado al agregarla: 0 registros en
+    # recorrido_cuadrillas y 0 en gestion_tramites → nada que sembrar en el
+    # estado; el primer aviso será el trámite nuevo que cree CNEL.
+    "201020983080": "Planificar y ASIGNAR a la cuadrilla JULIO CUZCO",
 }
 
 # RECORDATORIO por CÉDULA (mismo patrón que CUENTAS_CONTRATO). Cuando aparece un
