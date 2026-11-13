@@ -731,7 +731,9 @@ def main():
     ap.add_argument("--enviar", action="store_true",
                     help="envía los correos de verdad")
     ap.add_argument("--limite", type=int, default=60,
-                    help="cuántos correos del INBOX revisar (default 60)")
+                    help="cuántos correos del INBOX revisar (default 60). "
+                         "⚠️ NO subir mucho: con 200 tardaba ~6 min y se solapaba con "
+                         "la corrida horaria siguiente (colisión 2026-11-13).")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--resumen", action="store_true",
                     help="solo enviar el resumen diario a Miguel (no barre correos)")
