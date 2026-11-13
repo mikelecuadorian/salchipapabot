@@ -46,6 +46,11 @@ RE_ENTREGA_MEDIDOR = re.compile(
     r"|(entrega\w*\s+a\s+laboratorio)",             # entrega a laboratorio
     re.I)
 
+# EMER / emergencia en el asunto (Miguel, 7-nov-2026): estas órdenes las pide
+# CNEL con urgencia y llegan como reenvío del IS-U, SIN la frase de gestión.
+# Se procesan igual — son las que más falta hacen atender.
+RE_EMER = re.compile(r"\bEMER\b|emergenc", re.I)
+
 # --- envío (SMTP Gmail, mismas credenciales que himalaya) ---
 REMITENTE = "normalizacionart@gmail.com"
 DESTINATARIO = "antonio.morales@cnel.gob.ec"   # Ing. Gustavo Antonio Morales, CNEL
@@ -572,6 +577,41 @@ def correo_ejecutada(rec, gt, ahora):
     )
 
 
+def correo_en_proceso(rec, ahora):
+    """Respuesta de cortesía para una orden REAL en BD que aún no se ejecuta.
+
+    Miguel, 7-nov-2026: Antonio pide "confirmar gestión" de órdenes que están en
+    tratamiento. El bot callaba (no hay avance que reportar) y CNEL quedaba sin
+    respuesta. Esta plantilla NO inventa avance: reporta estado real de la BD.
+
+    La frase de cierre se ajusta al estado REAL (Miguel, 7-nov-2026):
+    - sin ejecución  → falta ejecución Y cierre técnico
+    - ya ejecutada   → falta SOLO el cierre técnico (no prometer la ejecución)
+    """
+    sin_ejecucion = not (rec["fecha_ejecucion"] or "").strip()
+    if sin_ejecucion:
+        estado = "EN TRATAMIENTO — sin ejecución registrada"
+        pendiente = ("Se notificará automáticamente al registrarse la ejecución "
+                     "y el cierre técnico en ACIIS/SAP.")
+    else:
+        estado = f"EJECUTADA el {rec['fecha_ejecucion']} (pendiente cierre técnico)"
+        pendiente = ("Se notificará automáticamente al registrarse el cierre "
+                     "técnico en ACIIS/SAP.")
+    return (
+        f"📄 SOLICITUD {rec['numero_solicitud']}\n"
+        f"{SEP}\n"
+        f"📋 Número de trámite: {rec['numero_tramite'] or '-'}\n"
+        f"🏷 Tipo: {rec['tipo_solicitud'] or '-'}\n"
+        f"👥 Cuadrilla: {rec['cuadrilla'] or 'SIN ASIGNAR'}\n"
+        f"📅 Fecha planificación: {rec['fecha_planificacion'] or '-'}\n"
+        f"🔢 Cuenta contrato: {rec['cuenta_contrato'] or '-'}\n"
+        f"{SEP}\n"
+        f"📌 Estado: {estado}\n"
+        f"{pendiente}\n\n"
+        + FIRMA.format(fecha=ahora)
+    )
+
+
 def correo_cierre(sap, ahora):
     return (
         "🔍 ORDEN SAP\n"
@@ -586,7 +626,10 @@ def correo_cierre(sap, ahora):
         f"{SEP}\n"
         f"🏘 Cantón: {sap['canton'] or '-'}\n"
         f"🔧 Actividad: {sap['actividad_pm'] or '-'}\n"
-        f"📅 Fecha cierre técnico: {sap['fecha_cambio_estado'] or '-'}\n\n"
+        f"📅 Fecha cierre técnico: {sap['fecha_cambio_estado'] or '-'}\n"
+        f"{SEP}\n"
+        f"✅ Cierre técnico registrado en SAP. Con esto queda concluido el "
+        f"seguimiento de esta orden; no se enviarán más notificaciones.\n\n"
         + FIRMA.format(fecha=ahora)
     )
 
@@ -708,14 +751,40 @@ def main():
             (cid, asunto)).fetchone()
         if ya:
             # Los casos NO_ENCONTRADA deben seguir evaluándose cada hora hasta que
-            # aparezcan en la BD o se dispare el aviso de 48 h. Los demás, skip.
+            # aparezcan en la BD o se dispare el aviso de 48 h.
             pendiente_revision = (ya["estado"] == "NO_ENCONTRADA"
                                   and not ya["aviso_48h_enviado"])
+            # ⚠️ BUG ARREGLADO 2026-11-13 (orden 90012490): antes, cualquier fila ya
+            # registrada hacía `continue` aquí, ANTES de llegar al guard por etapa de
+            # la línea ~931. Como CNEL responde en el MISMO hilo (mismo correo_id y
+            # mismo asunto "Re: ..."), la orden se respondía una sola vez (EN_PROCESO)
+            # y quedaba congelada para siempre: 24 órdenes ejecutadas en campo nunca
+            # recibieron el correo de EJECUTADA ni el de CIERRE.
+            #
+            # Ahora las filas EN_CICLO también se re-evalúan. El guard anti-reenvío de
+            # más abajo consulta la columna de la ETAPA REAL, así que no hay riesgo de
+            # duplicados: si la etapa no avanzó, `previo[0]` tiene fecha y se salta.
             if not pendiente_revision:
-                if args.verbose:
-                    print(f"  [{cid}] ya registrado ({ya['estado']}) — skip")
-                stats["ya_enviado"] += 1
-                continue
+                etapas_previas = ("ASIGNADA", "EN_PROCESO", "EJECUTADA", "CERRADA")
+                if ya["estado"] == "EN_CICLO":
+                    # re-evaluar: la orden pudo avanzar de etapa en ACIIS/SAP
+                    if args.verbose:
+                        print(f"  [{cid}] EN_CICLO — reevaluando etapa real")
+                elif ya["estado"] in etapas_previas:
+                    if args.verbose:
+                        print(f"  [{cid}] ya registrado ({ya['estado']}) — skip")
+                    stats["ya_enviado"] += 1
+                    continue
+                else:
+                    if args.verbose:
+                        print(f"  [{cid}] ya registrado ({ya['estado']}) — skip")
+                    stats["ya_enviado"] += 1
+                    continue
+            # ⚠️ Aunque NO_ENCONTRADA, si ya se envió una etapa NO_ASIGNADA no se
+            # reenvía: basta un aviso por etapa (Miguel, 7-nov-2026: la 90002487
+            # se respondió EJECUTADA el 6-nov 19:07 y se seguía respondiendo cada
+            # hora porque el estado quedó NO_ENCONTRADA). Solo se permite reenviar
+            # si la etapa NUEVA es distinta y superior (ASIGNADA→EJECUTADA→CERRADA).
             if args.verbose:
                 print(f"  [{cid}] NO_ENCONTRADA aún abierta — reevaluando")
 
@@ -737,11 +806,22 @@ def main():
             print(f"  [{cid}] no se pudo leer el cuerpo: {e}")
             continue
         cuerpo = cuerpo_sin_cita(mime)
-        if FRASE_GESTION not in norm(cuerpo):
+        # EMER/emergencia: se procesa aunque el correo no traiga la frase de
+        # gestión (Miguel, 7-nov-2026). Antonio reenvía el IS-U tal cual, sin la
+        # frase, y esas son justamente las que pide atender urgente: exigir la
+        # frase dejaba sin respuesta TODOS los EMER del día (verificado: 12 de
+        # 17 correos de la mañana nunca se evaluaron).
+        # ⚠️ El EMER puede venir SOLO en el cuerpo, no en el asunto: la orden
+        # 90001175 llegó como "Fwd: IS-U: Orden servicio: …" (asunto limpio) y
+        # el "ORDEN EMER" estaba dentro. Buscar en los dos.
+        es_emer = bool(RE_EMER.search(asunto) or RE_EMER.search(cuerpo or ""))
+        if FRASE_GESTION not in norm(cuerpo) and not es_emer:
             stats["sin_frase"] += 1
             if args.verbose:
                 print(f"  [{cid}] sin frase de gestión — skip ({asunto[:60]})")
             continue
+        if es_emer and FRASE_GESTION not in norm(cuerpo):
+            print(f"  🚨 [{cid}] EMER sin frase de gestión — se procesa igual ({asunto[:55]})")
 
         # 3. ubicar la orden
         rec = None
@@ -854,11 +934,39 @@ def main():
             if gt:
                 etapa, cuerpo_mail = "EJECUTADA", correo_ejecutada(rec, gt, ahora)
             elif not (rec["fecha_ejecucion"] or "").strip():
-                etapa, cuerpo_mail = "ASIGNADA", correo_asignacion(rec, ahora)
+                # Orden REAL en BD pero sin ejecución: antes se callaba y CNEL
+                # quedaba sin respuesta. Se contesta "en proceso" (una sola vez).
+                # Si el asunto es EMER se usa la misma plantilla (misma etapa).
+                etapa, cuerpo_mail = "EN_PROCESO", correo_en_proceso(rec, ahora)
 
         if not etapa:
             if args.verbose:
                 print(f"  [{cid}] sin etapa determinable — skip")
+            continue
+
+        # 🚫 GUARD ANTI-REENVÍO (Miguel, 7-nov-2026): una sola respuesta por
+        # etapa y por orden. Si esa etapa ya se envió, no se repite nunca más
+        # (basta un aviso hasta el cierre técnico). Esto cortó el bucle de la
+        # 90002487, que se respondía EJECUTADA cada hora porque su fila quedó
+        # con estado NO_ENCONTRADA y por eso se reevaluaba en cada ciclo.
+        col_etapa = {"ASIGNADA": "enviado_asignacion",
+                     "EN_PROCESO": "enviado_en_proceso",
+                     "EJECUTADA": "enviado_ejecutada",
+                     "CERRADA": "enviado_cierre"}[etapa]
+        previo = con.execute(
+            f"SELECT {col_etapa} FROM seguimiento_ordenes_correo"
+            f" WHERE numero_orden = ?", (orden or rec["numero_solicitud"],)
+        ).fetchone()
+        if previo and previo[0]:
+            if args.verbose:
+                print(f"  [{cid}] {etapa} ya respondida ({previo[0]}) — sin reenvío")
+            con.execute(
+                "UPDATE seguimiento_ordenes_correo SET estado = 'EN_CICLO',"
+                " notas = 'respondida; sin reenvío por etapa',"
+                " actualizado_en = datetime('now','localtime')"
+                " WHERE numero_orden = ?", (orden or rec["numero_solicitud"],))
+            con.commit()
+            stats["ya_enviado"] += 1
             continue
 
         stats["candidatos"] += 1
@@ -888,6 +996,7 @@ def main():
             ok, detalle = enviar_correo(asunto, cuerpo_mail, correo_id=cid)
             if ok:
                 col = {"ASIGNADA": "enviado_asignacion",
+                       "EN_PROCESO": "enviado_en_proceso",
                        "EJECUTADA": "enviado_ejecutada",
                        "CERRADA": "enviado_cierre"}[etapa]
                 con.execute(f"""UPDATE seguimiento_ordenes_correo
