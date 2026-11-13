@@ -360,6 +360,14 @@ def horario_laboral():
     return now.weekday() < 5 and 8 <= now.hour < 18
 
 
+def _uid(mensaje):
+    """Extrae el UID de IMAP de un envelope de himalaya (viene como str)."""
+    try:
+        return int(str(mensaje.get("id", 0)).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
 def norm(s):
     """Minúsculas sin acentos, para comparar la frase de gestión."""
     if not s:
@@ -711,15 +719,18 @@ def enviar_resumen_diario():
 
     enviados = con.execute("""
         SELECT numero_orden, etapa_actual, cuadrilla_asignada,
-               COALESCE(enviado_asignacion, enviado_ejecutada, enviado_cierre) AS cuando
-          FROM seguimiento_ordenes_correo
-         WHERE substr(COALESCE(enviado_asignacion, enviado_ejecutada, enviado_cierre),1,10) = ?
+               COALESCE(enviado_asignacion, enviado_en_proceso,
+                        enviado_ejecutada, enviado_cierre) AS cuando
+          FROM seguimiento_orden_correo
+         WHERE substr(COALESCE(enviado_asignacion, enviado_en_proceso,
+                               enviado_ejecutada, enviado_cierre),1,10) = ?
          ORDER BY cuando""", (hoy,)).fetchall()
 
     pendientes = con.execute("""
-        SELECT numero_orden, estado, notas FROM seguimiento_ordenes_correo
-         WHERE estado IN ('SIN_CUADRILLA','NO_ENCONTRADA','AMBIGUO','PENDIENTE')
-         ORDER BY id DESC LIMIT 20""").fetchall()
+        SELECT numero_orden, estado, notas FROM seguimiento_orden_correo
+         WHERE estado IN ('SIN_CUADRILLA','NO_ENCONTRADA','AMBIGUO','PENDIENTE',
+                          'PENDIENTE_REVISION')
+         ORDER BY creado_en DESC LIMIT 20""").fetchall()
 
     lineas = [f"📬 *Seguimiento correos CNEL — {hoy}*", ""]
     lineas.append(f"*Enviados hoy:* {len(enviados)}")
@@ -772,12 +783,36 @@ def main():
     print("=" * 62)
 
     # 1. traer correos
+    # ── PUNTERO v2 (Jefe, 13-nov-2026) ──────────────────────────────────────
+    # Antes se traían SIEMPRE los últimos `--limite` correos y se volvían a
+    # evaluar todos: trabajo repetido y, peor, dos oportunidades de reprocesar.
+    # Ahora se recuerda hasta qué UID ya se leyó (tabla puntero_imap) y solo se
+    # miran los NUEVOS. Si el puntero no existe (primera vez) se usa --limite.
+    #
+    # ⚠️ El puntero es solo EFICIENCIA; la seguridad contra duplicados la da el
+    # candado por (orden, etapa) en la BD. Por eso el puntero avanza SIEMPRE al
+    # final, incluso si un envío falló: el estado real vive en la tabla.
+    con = conexion()
+    uid_previo = None
+    try:
+        fila_ptr = con.execute(
+            "SELECT uid_ultimo FROM puntero_imap WHERE carpeta='INBOX'").fetchone()
+        if fila_ptr:
+            uid_previo = fila_ptr[0]
+    except sqlite3.OperationalError:
+        uid_previo = None   # tabla aún no creada (BD vieja) -> modo ventana
+
     raw = himalaya(["envelope", "list", "-a", CUENTA, "--folder", "INBOX",
                     "-s", str(args.limite), "--output", "json"])
     correos = json.loads(raw)
-    print(f"\nCorreos revisados: {len(correos)}")
 
-    con = conexion()
+    if uid_previo is not None:
+        antes = len(correos)
+        correos = [m for m in correos if _uid(m) > uid_previo]
+        print(f"\nCorreos NUEVOS desde UID {uid_previo}: {len(correos)} "
+              f"(ventana leída: {antes})")
+    else:
+        print(f"\nCorreos revisados: {len(correos)} (sin puntero — primera pasada)")
     stats = {"ignorado_sin_datos": 0, "sin_frase": 0, "sin_orden_bd": 0,
              "ambiguo": 0, "sin_cuadrilla": 0, "aviso_sin_cuadrilla": 0,
              "aviso_24h": 0, "aviso_48h": 0,
@@ -793,11 +828,23 @@ def main():
         frm = m.get("from") or {}
         remitente = (frm.get("addr") or "") if isinstance(frm, dict) else ""
 
-        # ya registrado?
+        # ⚠️ v2 (2026-11-13): la llave de control es SOLO la orden, no el correo.
+        # Antes se consultaba por (correo_id, asunto_original); como CNEL responde
+        # en hilos con asuntos distintos ("Re: EMER 90009992 / AC ..." vs
+        # "Re: SIN ENERGIA AC- ..."), cada correo estrenaba fila con las columnas
+        # enviado_* vacías y el candado por etapa nunca veía lo que la otra fila
+        # ya había avisado. Caso real: 90009992 recibió EJECUTADA por una fila y
+        # CIERRE por otra — dos correos a CNEL por la misma orden.
+        #
+        # Ahora hay UNA fila por orden. Todo se decide contra ella.
+        # La extracción de orden/cuenta se hace AQUÍ (antes estaba más abajo) para
+        # poder consultar el estado antes de gastar tiempo leyendo el cuerpo.
+        orden, cuenta = extraer(asunto)
+        clave_orden = orden or cuenta
         ya = con.execute(
-            "SELECT id, estado, aviso_48h_enviado FROM seguimiento_ordenes_correo"
-            " WHERE correo_id=? AND asunto_original=?",
-            (cid, asunto)).fetchone()
+            "SELECT estado, aviso_48h_enviado, enviado_asignacion, enviado_en_proceso,"
+            " enviado_ejecutada, enviado_cierre"
+            " FROM seguimiento_orden_correo WHERE numero_orden=?", (clave_orden,)).fetchone()
         if ya:
             # Los casos NO_ENCONTRADA deben seguir evaluándose cada hora hasta que
             # aparezcan en la BD o se dispare el aviso de 48 h.
@@ -837,10 +884,30 @@ def main():
             if args.verbose:
                 print(f"  [{cid}] NO_ENCONTRADA aún abierta — reevaluando")
 
-        orden, cuenta = extraer(asunto)
+        # ── v2: REGISTRAR SIEMPRE ANTES DE RESOLVER ──────────────────────────
+        # Decisión del Jefe (13-nov-2026): la búsqueda en gestion_medidores NO es
+        # el juez que decide si un correo entra a nuestra tabla. Primero se
+        # registra el correo (queda memoria de que lo vimos); después se intenta
+        # resolver. Así un correo cuya orden aún no está en ACIIS no se pierde:
+        # queda pendiente y se reintenta en los ciclos siguientes.
+        #
+        # Único requisito de entrada: tener orden (8 díg) o cuenta (2000/2010).
+        # Eso filtra solo los rebotes (mailer-daemon), el spam y los listados,
+        # que no traen ninguno de los dos — sin necesidad de listas de remitentes.
         if not orden and not cuenta:
             stats["ignorado_sin_datos"] += 1
+            if args.verbose:
+                print(f"  [{cid}] sin orden ni cuenta — ignorado ({asunto[:60]})")
             continue
+
+        # Se anota el correo en la memoria por UID (para no reprocesarlo nunca
+        # más, y para poder reintentarlo aunque salga de la ventana de lectura).
+        if enviar_de_verdad:
+            con.execute("""INSERT OR IGNORE INTO correos_vistos
+                (uid, carpeta, numero_orden, cuenta, asunto, fecha_correo, es_respuesta)
+                VALUES (?,?,?,?,?,?,?)""",
+                (cid, "INBOX", clave_orden, cuenta, asunto, fecha_correo,
+                 1 if RE_RESPUESTA.match(asunto) else 0))
 
         # R3: pedidos de entrega de medidor -> se ignoran (no se responde)
         if RE_ENTREGA_MEDIDOR.search(asunto) or RE_ENTREGA_MEDIDOR.search(asunto.replace("Re:", "")):
@@ -873,12 +940,36 @@ def main():
             es_emer = False
         else:
             es_emer = bool(RE_EMER.search(asunto) or RE_EMER.search(cuerpo or ""))
-        if FRASE_GESTION not in norm(cuerpo) and not es_emer:
+
+        # ── v2 (13-nov-2026): la frase YA NO bloquea la entrada ──────────────
+        # Antes, "sin frase de gestión y sin EMER" hacía continue y el correo se
+        # descartaba para siempre. Fue lo que perdió el 8877 (DOMICILIO SIN
+        # SERVICIO ELECTRICO, orden ingresada 40 min después): cuando ACIIS
+        # publicó la orden, el correo ya nadie lo volvía a mirar.
+        #
+        # Ahora el correo YA quedó registrado arriba. Lo que decide la frase es
+        # si RESPONDEMOS automáticamente, no si lo guardamos:
+        #   • trae la frase        -> flujo normal, responde
+        #   • es EMER              -> responde igual (urgencia manda)
+        #   • ni frase ni EMER     -> queda registrado como PENDIENTE_REVISION y
+        #                             NO se responde (evita contestar correos que
+        #                             no pedían gestión); aparece en el informe.
+        tiene_frase = FRASE_GESTION in norm(cuerpo)
+        if not tiene_frase and not es_emer:
             stats["sin_frase"] += 1
+            if enviar_de_verdad:
+                con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
+                    (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
+                     asunto_origen, creado_en)
+                    VALUES (?,?,?,?,?,?,datetime('now','localtime'))""",
+                    (clave_orden, cuenta, "PENDIENTE_REVISION",
+                     "registrado sin frase de gestión — no se responde solo",
+                     cid, asunto))
+                con.commit()
             if args.verbose:
-                print(f"  [{cid}] sin frase de gestión — skip ({asunto[:60]})")
+                print(f"  📝 [{cid}] sin frase de gestión — registrado, sin respuesta ({asunto[:55]})")
             continue
-        if es_emer and FRASE_GESTION not in norm(cuerpo):
+        if es_emer and not tiene_frase:
             print(f"  🚨 [{cid}] EMER sin frase de gestión — se procesa igual ({asunto[:55]})")
 
         # 3. ubicar la orden
@@ -891,38 +982,39 @@ def main():
                 stats["ambiguo"] += 1
                 print(f"  ⚠️ [{cid}] AMBIGUO — cuenta {cuenta} con varias solicitudes abiertas")
                 if enviar_de_verdad:
-                    con.execute("""INSERT OR IGNORE INTO seguimiento_ordenes_correo
-                        (numero_orden, cuenta_contrato, correo_id, asunto_original, estado, notas)
-                        VALUES (?,?,?,?,?,?)""",
-                        (orden or cuenta, cuenta, cid, asunto, "AMBIGUO",
-                         "varias solicitudes abiertas para la misma cuenta"))
+                    con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
+                        (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
+                         asunto_origen, creado_en)
+                        VALUES (?,?,?,?,?,?,datetime('now','localtime'))""",
+                        (clave_orden, cuenta, "AMBIGUO",
+                         "varias solicitudes abiertas para la misma cuenta", cid, asunto))
                     con.commit()
                 continue
 
         if rec is None:
             stats["sin_orden_bd"] += 1
             tipo = "orden" if orden else "cuenta"
-            clave = orden or cuenta
             base_f = parse_fecha(fecha_correo) if fecha_correo else datetime.now()
             horas = (datetime.now() - base_f).total_seconds() / 3600
 
-            # registrar el caso la primera vez
+            # v2: UNA fila por orden. Si ya existe (por otro correo del hilo o de
+            # un ciclo anterior), se conserva; solo se crea si es nueva.
             existente = con.execute(
-                "SELECT * FROM seguimiento_ordenes_correo WHERE numero_orden=? AND correo_id=?",
-                (clave, cid)).fetchone()
+                "SELECT * FROM seguimiento_orden_correo WHERE numero_orden=?",
+                (clave_orden,)).fetchone()
 
             if not existente:
                 if enviar_de_verdad:
-                    con.execute("""INSERT OR IGNORE INTO seguimiento_ordenes_correo
-                        (numero_orden, cuenta_contrato, correo_id, asunto_original,
-                         estado, notas, creado_en)
-                        VALUES (?,?,?,?,'NO_ENCONTRADA','esperando aparición en recorrido',
-                                datetime('now','localtime'))""",
-                        (clave, cuenta, cid, asunto))
+                    con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
+                        (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
+                         asunto_origen, creado_en)
+                        VALUES (?,?,'NO_ENCONTRADA','esperando aparición en recorrido',
+                                ?,?,datetime('now','localtime'))""",
+                        (clave_orden, cuenta, cid, asunto))
                     con.commit()
                 existente = con.execute(
-                    "SELECT * FROM seguimiento_ordenes_correo WHERE numero_orden=? AND correo_id=?",
-                    (clave, cid)).fetchone()
+                    "SELECT * FROM seguimiento_orden_correo WHERE numero_orden=?",
+                    (clave_orden,)).fetchone()
 
             # AVISOS DE ÓRDENES NO ENCONTRADAS
             # Política (5-nov-2026, decisión de Miguel):
@@ -933,12 +1025,12 @@ def main():
             if horas >= 48 and not env48:
                 stats["aviso_48h"] += 1
                 hist = historial_cuenta(con, cuenta) if cuenta else (0, None)
-                print(f"  🔔 [{cid}] {tipo} {clave} — {horas:.0f} h SIN APARECER "
+                print(f"  🔔 [{cid}] {tipo} {clave_orden} — {horas:.0f} h SIN APARECER "
                       f"→ AVISO INTERNO A MIGUEL (historial: {hist[0]} previas)")
                 if enviar_de_verdad:
                     ok = avisar_miguel(
                         f"🔔 Orden sin aparecer (48 h)\n"
-                        f"Orden/Cuenta: {clave}\n"
+                        f"Orden/Cuenta: {clave_orden}\n"
                         f"Asunto: {asunto[:120]}\n"
                         f"Correo recibido: {fecha_correo}\n"
                         f"Historial de la cuenta: {hist[0]} solicitudes previas"
@@ -946,18 +1038,18 @@ def main():
                         f"No está en recorrido_cuadrillas ni en gestión de trámites.\n"
                         f"Decide tú: responder a CNEL o esperar.")
                     if ok:
-                        con.execute("""UPDATE seguimiento_ordenes_correo
+                        con.execute("""UPDATE seguimiento_orden_correo
                                        SET aviso_48h_enviado=datetime('now','localtime'),
                                            actualizado_en=datetime('now','localtime')
-                                     WHERE numero_orden=? AND correo_id=?""", (clave, cid))
+                                     WHERE numero_orden=?""", (clave_orden,))
                         con.commit()
                 else:
                     print("     (modo seco: no se avisa)")
             elif horas >= 24 and not env48:
-                print(f"  ⏳ [{cid}] {tipo} {clave} — {horas:.1f} h. Sin aviso a CNEL "
+                print(f"  ⏳ [{cid}] {tipo} {clave_orden} — {horas:.1f} h. Sin aviso a CNEL "
                       f"(política: solo aviso interno a las 48 h). Faltan {48 - horas:.1f} h.")
             else:
-                print(f"  ⏳ [{cid}] {tipo} {clave} — {horas:.1f} h, sin aviso (umbral 48 h)")
+                print(f"  ⏳ [{cid}] {tipo} {clave_orden} — {horas:.1f} h, sin aviso (umbral 48 h)")
             continue
 
         # 4. sin cuadrilla -> nada (pero avisar a las 5 h en horario laboral)
@@ -970,11 +1062,12 @@ def main():
                 print(f"  ⏰ [{cid}] SIN CUADRILLA hace {horas:.0f} h — AVISAR A MIGUEL "
                       f"(solicitud {rec['numero_solicitud']}, cta {rec['cuenta_contrato']})")
                 if enviar_de_verdad:
-                    con.execute("""INSERT OR IGNORE INTO seguimiento_ordenes_correo
-                        (numero_orden, cuenta_contrato, correo_id, asunto_original, estado, notas)
-                        VALUES (?,?,?,?,?,?)""",
-                        (orden or rec["numero_solicitud"], rec["cuenta_contrato"], cid, asunto,
-                         "SIN_CUADRILLA", f"aviso 5h {datetime.now():%Y-%m-%d %H:%M}"))
+                    con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
+                        (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
+                         asunto_origen, creado_en)
+                        VALUES (?,?,'SIN_CUADRILLA',?,?,?,datetime('now','localtime'))""",
+                        (clave_orden, rec["cuenta_contrato"],
+                         f"aviso 5h {datetime.now():%Y-%m-%d %H:%M}", cid, asunto))
                     con.commit()
             elif args.verbose:
                 print(f"  [{cid}] sin cuadrilla hace {horas:.1f} h — espera")
@@ -1011,16 +1104,18 @@ def main():
                      "EN_PROCESO": "enviado_en_proceso",
                      "EJECUTADA": "enviado_ejecutada",
                      "CERRADA": "enviado_cierre"}[etapa]
+        # v2: la llave es SOLO la orden. Una fila por orden, sin importar cuántos
+        # correos del hilo hayan llegado con asuntos distintos.
         previo = con.execute(
-            f"SELECT {col_etapa} FROM seguimiento_ordenes_correo"
-            f" WHERE numero_orden = ?", (orden or rec["numero_solicitud"],)
+            f"SELECT {col_etapa} FROM seguimiento_orden_correo"
+            f" WHERE numero_orden = ?", (clave_orden,)
         ).fetchone()
         # 🚫 DUPLICADO DENTRO DEL MISMO CICLO (auditoría 2026-11-13):
         # el sello en BD se escribe DESPUÉS de enviar, así que dos correos del
         # mismo hilo que resuelven a la MISMA orden (p.ej. [8793] por cuenta y
         # [8778] por número) pasaban ambos el guard y generaban dos correos
         # idénticos a CNEL. Se lleva un set en memoria por corrida.
-        clave_ciclo = (orden or rec["numero_solicitud"], etapa)
+        clave_ciclo = (clave_orden, etapa)
         if clave_ciclo in ya_respondidas_ciclo:
             if args.verbose:
                 print(f"  [{cid}] {etapa} ya respondida en ESTE ciclo — sin reenvío")
@@ -1030,10 +1125,10 @@ def main():
             if args.verbose:
                 print(f"  [{cid}] {etapa} ya respondida ({previo[0]}) — sin reenvío")
             con.execute(
-                "UPDATE seguimiento_ordenes_correo SET estado = 'EN_CICLO',"
+                "UPDATE seguimiento_orden_correo SET estado = 'EN_CICLO',"
                 " notas = 'respondida; sin reenvío por etapa',"
                 " actualizado_en = datetime('now','localtime')"
-                " WHERE numero_orden = ?", (orden or rec["numero_solicitud"],))
+                " WHERE numero_orden = ?", (clave_orden,))
             con.commit()
             stats["ya_enviado"] += 1
             continue
@@ -1051,20 +1146,27 @@ def main():
         print("  " + "-" * 58)
 
         if enviar_de_verdad:
-            # insertar/actualizar registro
-            con.execute("""INSERT INTO seguimiento_ordenes_correo
-                (numero_orden, cuenta_contrato, correo_id, asunto_original, etapa_actual,
-                 cuadrilla_asignada, fecha_planificacion, fecha_ejecucion, fecha_cierre_sap,
-                 observacion_gestion, estado, actualizado_en)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))
-                ON CONFLICT(numero_orden, correo_id) DO UPDATE SET
+            # v2: UPSERT sobre la orden (una sola fila). No hay correo_id en la
+            # llave; el correo que originó la fila se guarda aparte si es nueva.
+            con.execute("""INSERT INTO seguimiento_orden_correo
+                (numero_orden, cuenta_contrato, correo_id_origen, asunto_origen,
+                 etapa_actual, cuadrilla_asignada, fecha_planificacion, fecha_ejecucion,
+                 fecha_cierre_sap, observacion_gestion, estado, creado_en, actualizado_en)
+                VALUES (?,?,?,?,?,?,?,?,?,?,'EN_CICLO',
+                        datetime('now','localtime'), datetime('now','localtime'))
+                ON CONFLICT(numero_orden) DO UPDATE SET
                     etapa_actual=excluded.etapa_actual,
+                    cuadrilla_asignada=excluded.cuadrilla_asignada,
+                    fecha_ejecucion=COALESCE(excluded.fecha_ejecucion, fecha_ejecucion),
+                    fecha_cierre_sap=COALESCE(excluded.fecha_cierre_sap, fecha_cierre_sap),
+                    observacion_gestion=COALESCE(excluded.observacion_gestion, observacion_gestion),
+                    estado='EN_CICLO',
                     actualizado_en=datetime('now','localtime')""",
-                (orden or rec["numero_solicitud"], rec["cuenta_contrato"], cid, asunto,
+                (clave_orden, rec["cuenta_contrato"], cid, asunto,
                  etapa, rec["cuadrilla"], rec["fecha_planificacion"],
                  rec["fecha_ejecucion"],
                  sap["fecha_cambio_estado"] if sap else None,
-                 (gt["observacion_gestion"] if gt else None), "EN_CICLO"))
+                 (gt["observacion_gestion"] if gt else None)))
             con.commit()
             ok, detalle = enviar_correo(asunto, cuerpo_mail, correo_id=cid)
             if ok:
@@ -1074,23 +1176,38 @@ def main():
                        "EN_PROCESO": "enviado_en_proceso",
                        "EJECUTADA": "enviado_ejecutada",
                        "CERRADA": "enviado_cierre"}[etapa]
-                con.execute(f"""UPDATE seguimiento_ordenes_correo
+                con.execute(f"""UPDATE seguimiento_orden_correo
                                 SET {col} = datetime('now','localtime'),
                                     actualizado_en = datetime('now','localtime')
-                              WHERE numero_orden = ? AND correo_id = ?""",
-                            (orden or rec["numero_solicitud"], cid))
+                              WHERE numero_orden = ?""",
+                            (clave_orden,))
                 con.commit()
                 _to, _cc = destinatarios_original(cid)
                 print(f"  📤 ENVIADO → To: {', '.join(_to)}"
                       + (f" | Cc: {', '.join(_cc)}" if _cc else ""))
             else:
-                con.execute("""UPDATE seguimiento_ordenes_correo SET notas = ?,
+                con.execute("""UPDATE seguimiento_orden_correo SET notas = ?,
                                actualizado_en = datetime('now','localtime')
-                               WHERE numero_orden = ? AND correo_id = ?""",
-                            (f"ENVIO FALLIDO: {detalle[:200]}",
-                             orden or rec["numero_solicitud"], cid))
+                               WHERE numero_orden = ?""",
+                            (f"ENVIO FALLIDO: {detalle[:200]}", clave_orden))
                 con.commit()
                 print(f"  ❌ FALLÓ EL ENVÍO: {detalle[:200]}")
+
+    # ── Avance del puntero ──────────────────────────────────────────────────
+    # Se avanza al UID más alto visto en esta corrida. Se hace SIEMPRE, incluso
+    # si algún envío falló: el estado real (qué etapa ya se avisó) vive en la
+    # tabla, y el candado por (orden, etapa) impide reenviar. El puntero es solo
+    # para no releer lo mismo cada hora.
+    if enviar_de_verdad and correos:
+        max_uid = max((_uid(m) for m in correos), default=0)
+        if max_uid > 0 and (uid_previo is None or max_uid > uid_previo):
+            con.execute("""INSERT INTO puntero_imap (carpeta, uid_ultimo, actualizado_en)
+                           VALUES ('INBOX', ?, datetime('now','localtime'))
+                           ON CONFLICT(carpeta) DO UPDATE SET
+                             uid_ultimo=excluded.uid_ultimo,
+                             actualizado_en=excluded.actualizado_en""", (max_uid,))
+            con.commit()
+            print(f"\n🔖 Puntero INBOX → UID {max_uid}")
 
     print("\n" + "=" * 62)
     print("RESUMEN")
