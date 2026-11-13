@@ -73,6 +73,17 @@ RE_RESPUESTA = re.compile(r"^\s*(re|rv|fw|fwd)\s*:", re.I)
 # --- envío (SMTP Gmail, mismas credenciales que himalaya) ---
 REMITENTE = "normalizacionart@gmail.com"
 DESTINATARIO = "antonio.morales@cnel.gob.ec"   # Ing. Gustavo Antonio Morales, CNEL
+
+# 🚫 BUZONES MUERTOS — nunca copiar, aunque vengan en el hilo original.
+# Miguel (13-nov-2026): "sacala de la lista de destinatarios para siempre".
+# `callcentergye@cnel.gob.ec` rebota con 554 5.7.1 Invalid-Recipient: la dirección
+# ya no existe en CNEL, pero los hilos viejos la siguen trayendo en Cc y
+# `destinatarios_original()` la heredaba → 23 rebotes DSN por cada 80 correos.
+# Se filtra en TODAS las salidas (To y Cc). Para retirar una dirección de aquí,
+# confirmar antes que el buzón esté operativo: si vuelve a existir, quitarla.
+BUZONES_MUERTOS = {
+    "callcentergye@cnel.gob.ec",
+}
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 _CFG = "config"
@@ -185,6 +196,12 @@ def destinatarios_original(correo_id):
             continue
         vistos.add(al)
         cc_final.append(a)
+
+    # 🚫 Nunca escribir a un buzón muerto: rebota y ensucia la bandeja con DSN.
+    # Se filtra al final, sobre To y Cc, para cubrir también el caso de que el
+    # remitente original sea esa misma dirección.
+    to_final = [a for a in to_final if a.lower() not in BUZONES_MUERTOS]
+    cc_final = [a for a in cc_final if a.lower() not in BUZONES_MUERTOS]
 
     return to_final, cc_final
 
