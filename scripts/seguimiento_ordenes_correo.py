@@ -368,8 +368,16 @@ def himalaya(args, timeout=120):
 RE_ORDEN = re.compile(
     r"(?:ORDEN(?:\s+SERVICIO|\s+DE\s+SERVICIO)?|IS-U\s*:\s*ORDEN\s+SERVICIO)\s*:?\s*(\d{6,12})",
     re.I)
+# ⚠️ Formatos REALES de CNEL que el patrón de arriba no cubría (auditoría 2026-11-13):
+#   "Re: EMER#  90005227 / CC# 1701742725 -  200060437932 /"
+#   "Re: EMER 90008987 CC 200047644311  / GLR DURAN CENTRO"
+#   "Re: APP# 15910063 /  EMER#  90009747 / CC# 0901808183 - 200045607484 /"
+# El '#' y el prefijo EMER/APP dejaban el asunto como ignorado_sin_datos, con
+# órdenes de EMERGENCIA mudas. Se prueban DESPUÉS del patrón canónico.
+RE_ORDEN_ALT = re.compile(
+    r"\b(?:EMER|APP|ORDEN)\s*#?\s*:?\s*(\d{6,12})", re.I)
 RE_CUENTA = re.compile(
-    r"(?:CTA|CT|AC|CUENTA(?:\s+CONTRATO)?)\s*:?\s*(\d{8,13})", re.I)
+    r"(?:CTA|CT|AC|CC|CLTE|CUENTA(?:\s+CONTRATO)?)\s*[-#]?\s*:?\s*(\d{8,13})", re.I)
 
 
 def extraer(subject):
@@ -380,15 +388,32 @@ def extraer(subject):
     m = RE_ORDEN.search(s)
     if m:
         orden = m.group(1)
+    else:
+        # Fallback para formatos CNEL con '#' o prefijo EMER/APP (ver RE_ORDEN_ALT).
+        # El primer número de 6-12 dígitos tras la etiqueta se toma como orden.
+        m = RE_ORDEN_ALT.search(s)
+        if m:
+            orden = m.group(1)
 
-    # Evitar que 'AC' dentro de otra palabra dispare: se exige límite de palabra
+    # ⚠️ REGLA DE NEGOCIO (Miguel, 2026-11-13): las cuentas contrato del
+    # Consorcio ART empiezan con 2000 o 2010 desde oct-2024. Números como
+    # 1701742725 (CC) o 15910063 (APP) NO son cuentas. En asuntos que traen
+    # varios números ("EMER# 90005227 / CC# 1701742725 - 200060437932 /")
+    # hay que quedarse con el que empieza 2000/2010, no con el primero.
+    candidatas = []
     for m in RE_CUENTA.finditer(s):
         val = m.group(1)
-        # descartar si es el mismo número ya tomado como orden
         if orden and val == orden:
             continue
-        cuenta = val
-        break
+        candidatas.append(val)
+    # Candidatas sueltas de 12-13 dígitos con prefijo 2000/2010 aunque no lleven
+    # etiqueta delante ("EMER 90008987 ... - 200060437932").
+    for m in re.finditer(r"(?<!\d)(20(?:00|10)\d{8,11})(?!\d)", s):
+        if m.group(1) not in candidatas:
+            candidatas.append(m.group(1))
+    if candidatas:
+        propias = [v for v in candidatas if v.startswith(("2000", "2010"))]
+        cuenta = (propias or candidatas)[0]
 
     return orden, cuenta
 
@@ -736,6 +761,9 @@ def main():
              "ambiguo": 0, "sin_cuadrilla": 0, "aviso_sin_cuadrilla": 0,
              "aviso_24h": 0, "aviso_48h": 0,
              "ya_enviado": 0, "candidatos": 0}
+    # Órdenes ya atendidas EN ESTA CORRIDA: evita duplicados cuando dos correos
+    # distintos del mismo hilo resuelven a la misma orden (ver guard anti-reenvío).
+    ya_respondidas_ciclo = set()
 
     for m in correos:
         cid = str(m.get("id"))
@@ -957,6 +985,17 @@ def main():
             f"SELECT {col_etapa} FROM seguimiento_ordenes_correo"
             f" WHERE numero_orden = ?", (orden or rec["numero_solicitud"],)
         ).fetchone()
+        # 🚫 DUPLICADO DENTRO DEL MISMO CICLO (auditoría 2026-11-13):
+        # el sello en BD se escribe DESPUÉS de enviar, así que dos correos del
+        # mismo hilo que resuelven a la MISMA orden (p.ej. [8793] por cuenta y
+        # [8778] por número) pasaban ambos el guard y generaban dos correos
+        # idénticos a CNEL. Se lleva un set en memoria por corrida.
+        clave_ciclo = (orden or rec["numero_solicitud"], etapa)
+        if clave_ciclo in ya_respondidas_ciclo:
+            if args.verbose:
+                print(f"  [{cid}] {etapa} ya respondida en ESTE ciclo — sin reenvío")
+            stats["ya_enviado"] += 1
+            continue
         if previo and previo[0]:
             if args.verbose:
                 print(f"  [{cid}] {etapa} ya respondida ({previo[0]}) — sin reenvío")
@@ -970,6 +1009,10 @@ def main():
             continue
 
         stats["candidatos"] += 1
+        # Se registra también en MODO SECO: el seco debe predecir exactamente lo
+        # que haría el envío real (si no, muestra duplicados que nunca se enviarían
+        # y esconde los que sí — el seco dejaría de ser una prueba fiable).
+        ya_respondidas_ciclo.add(clave_ciclo)
         print(f"\n  ✅ [{cid}] {etapa} — solicitud {rec['numero_solicitud']} "
               f"| cuadrilla {rec['cuadrilla']}")
         print("  " + "-" * 58)
@@ -995,6 +1038,8 @@ def main():
             con.commit()
             ok, detalle = enviar_correo(asunto, cuerpo_mail, correo_id=cid)
             if ok:
+                # registro para el guard intra-ciclo (ver arriba)
+                ya_respondidas_ciclo.add(clave_ciclo)
                 col = {"ASIGNADA": "enviado_asignacion",
                        "EN_PROCESO": "enviado_en_proceso",
                        "EJECUTADA": "enviado_ejecutada",
