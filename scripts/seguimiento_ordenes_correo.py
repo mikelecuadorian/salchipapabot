@@ -975,6 +975,16 @@ def main():
         if not tiene_frase and not es_emer:
             stats["sin_frase"] += 1
             if enviar_de_verdad:
+                # ⚠️ v2.1 (13-nov-2026): ANTES esta rama solo escribía en
+                # correos_vistos y hacía continue, así que la ORDEN nunca se
+                # registraba en seguimiento_orden_correo. Fue justo lo que pasó
+                # con el 8877 (DOMICILIO SIN SERVICIO ELECTRICO, cta
+                # 200048766238): quedó como "correo visto" pero sin fila de
+                # seguimiento, así que cuando ACIIS publicó el trámite nadie la
+                # re-evaluó y el bot quedó ciego a la orden.
+                # Ahora la fila de seguimiento se crea IGUAL, en estado
+                # PENDIENTE_REVISION: no se responde solo, pero la orden queda
+                # en el radar y su avance (cuadrilla, ejecución) sí se vigila.
                 con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
                     (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
                      asunto_origen, creado_en)
