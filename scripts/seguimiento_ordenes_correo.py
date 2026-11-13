@@ -49,7 +49,26 @@ RE_ENTREGA_MEDIDOR = re.compile(
 # EMER / emergencia en el asunto (Miguel, 7-nov-2026): estas órdenes las pide
 # CNEL con urgencia y llegan como reenvío del IS-U, SIN la frase de gestión.
 # Se procesan igual — son las que más falta hacen atender.
-RE_EMER = re.compile(r"\bEMER\b|emergenc", re.I)
+#
+# AMPLIADO 2026-11-13 (correo 8877, DOMICILIO SIN SERVICIO ELECTRICO):
+# CNEL/ECU 911 despacha emergencias con estos asuntos SIN la frase de gestión y
+# SIN la palabra "EMER", así que quedaban descartadas para siempre. Ahora entran
+# al ciclo, se registran como NO_ENCONTRADA y se reintentan cada hora hasta que
+# ACIIS publique la orden (que puede tardar ~40 min desde que la ingresan).
+#
+# ⚠️ Solo se aplica al ASUNTO y SOLO si NO es una respuesta ("Re:"). Medido el
+# 13-nov: el patrón ancho capturaba 13 correos, de los cuales 12 eran "Re: SIN
+# ENERGIA ..." de Antonio respondiendo a avisos que el bot YA había enviado.
+# Esos 12 no deben re-procesarse: el anti-Re los deja fuera.
+RE_EMER = re.compile(
+    r"\bEMER\b|emergenc"
+    r"|domicilio\s+sin\s+servicio"
+    r"|sin\s+servicio\s+electrico"
+    r"|sin\s+energia",
+    re.I)
+
+# Asunto que es respuesta a un hilo ya atendido: NO se toma como emergencia.
+RE_RESPUESTA = re.compile(r"^\s*(re|rv|fw|fwd)\s*:", re.I)
 
 # --- envío (SMTP Gmail, mismas credenciales que himalaya) ---
 REMITENTE = "normalizacionart@gmail.com"
@@ -844,7 +863,16 @@ def main():
         # ⚠️ El EMER puede venir SOLO en el cuerpo, no en el asunto: la orden
         # 90001175 llegó como "Fwd: IS-U: Orden servicio: …" (asunto limpio) y
         # el "ORDEN EMER" estaba dentro. Buscar en los dos.
-        es_emer = bool(RE_EMER.search(asunto) or RE_EMER.search(cuerpo or ""))
+        #
+        # 2026-11-13: las frases eléctricas ("sin energia", "domicilio sin
+        # servicio") SOLO cuentan en el ASUNTO y SOLO si el correo NO es una
+        # respuesta. Si no, los "Re: SIN ENERGIA ..." de Antonio —que son
+        # respuestas a avisos que YA enviamos— se reprocesarían.
+        es_respuesta = bool(RE_RESPUESTA.match(asunto))
+        if es_respuesta and not re.search(r"\bEMER\b|emergenc", asunto + " " + (cuerpo or ""), re.I):
+            es_emer = False
+        else:
+            es_emer = bool(RE_EMER.search(asunto) or RE_EMER.search(cuerpo or ""))
         if FRASE_GESTION not in norm(cuerpo) and not es_emer:
             stats["sin_frase"] += 1
             if args.verbose:
