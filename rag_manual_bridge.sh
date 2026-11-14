@@ -40,15 +40,22 @@ fi
 # --kill-on-exit: si el puente muere, el hijo dentro del rootfs no queda huérfano.
 # Se ejecuta SIN exec para poder limpiar si algo falla.
 #
-# 🔴 TMPDIR (2026-10-29) — LA causa del rc=124 / "loader not found":
-# fastembed NO usa HF_HOME: usa `cache_dir` = $TMPDIR/fastembed_cache.
-#   · desde un shell con TMPDIR vacío → /tmp DENTRO del rootfs → modelo 128 MB presente ✅
+# TMPDIR (2026-10-29) — fastembed NO usa HF_HOME: usa `cache_dir` = $TMPDIR/fastembed_cache.
+#   · desde un shell con TMPDIR vacío → /tmp DENTRO del rootfs → modelo presente ✅
 #   · desde el bot, TMPDIR=/data/data/com.termux/files/usr/tmp (heredado de Termux)
 #     → apunta FUERA del rootfs, ahí no hay modelo, y fastembed se pone a DESCARGAR
 #     142 MB por consulta → se cuelga y el padre lo mata (rc=124).
 # Por eso "desde mi terminal funciona y desde el bot no": mismo script, distinto TMPDIR.
-# Se fuerza /tmp del rootfs, ANTES de invocar proot.
+#
+# ⚠️ CORRECCIÓN 2026-11-13 — /tmp se BORRA al reiniciar:
+#   Depender de TMPDIR=/tmp resolvía el problema de HOY, pero la caché vivía en
+#   un directorio efímero. Un reinicio limpio de la tablet = RAG caído, y sin error
+#   claro (el modelo intentaba descargar 118 MB en medio de una consulta).
+#   Ahora rag_config.py fija FASTEMBED_CACHE_PATH a /root/.cache/fastembed (persistente)
+#   y pasa cache_dir= explícito a TextEmbedding. TMPDIR se mantiene fijo a /tmp
+#   solo por si algún módulo viejo aún lo consulta.
 export TMPDIR=/tmp
+export FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 export HF_HOME=/root/.cache/huggingface
 export HF_HUB_DISABLE_TELEMETRY=1
 "$PROOT" -0 -r "$ROOTFS" \
