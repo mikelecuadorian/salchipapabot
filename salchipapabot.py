@@ -177,6 +177,11 @@ def es_consulta_bd(mensaje):
     for no_db in PALABRAS_NO_DB:
         if m.startswith(no_db):
             return False
+
+    # Si la pregunta es sobre el MANUAL (figuras, cláusulas, numerales) y no
+    # trae lenguaje propio de la BD, NO desviar: va a /manual.
+    if es_consulta_manual(mensaje) and not _tiene_lenguaje_bd(m):
+        return False
     
     # Detectar menciones a números grandes (patrón de medidores/tramites)
     tiene_numero = bool(re.search(r'\b\d{7,12}\b', m))
@@ -185,6 +190,81 @@ def es_consulta_bd(mensaje):
     palabras_encontradas = sum(1 for p in PALABRAS_DB if p in m)
     
     return tiene_numero or palabras_encontradas >= 1
+
+
+# =====================================================
+# DETECTAR SI UNA PREGUNTA ES SOBRE EL MANUAL CNEL
+# =====================================================
+
+# Palabras que apuntan al manual. "muéstrame" y "dame" NO están aquí a
+# propósito: son verbos genéricos que también usa la gente para pedir tablas
+# de la BD. El disparador real es el sustantivo del manual.
+PALABRAS_MANUAL = [
+    "manual", "mn-com", "anexo", "norma", "cláusula", "clausula",
+    "cláusulas", "clausulas", "numeral", "acápite", "acapite",
+    "figura", "figuras", "fig",
+    "bornera", "borneras", "medidor", "medidores",
+    "acometida", "acometidas", "caja de medidor", "zona de medidor",
+    "sello", "precinto", "visor", "poste", "ducto", "tubería", "tuberia",
+    "calibre", "ampacidad", "amperaje", "altura de instalación",
+]
+
+# Palabras que confirman que la persona habla del manual y no de su BD
+DISPARADORES_MANUAL = [
+    "manual", "mn-com", "anexo", "cláusula", "clausula", "numeral",
+    "figura", "figuras", "fig", "dice el manual", "dice la norma",
+    "según el manual", "segun el manual", "según la norma",
+]
+
+
+def _tiene_lenguaje_bd(m):
+    """Lenguaje inequívoco de la BD operativa (no del manual)."""
+    pistas_bd = [
+        "cuadrilla", "cuadrillas", "tramite", "trámite", "tramites",
+        "trámites", "solicitud", "solicitudes", "cuenta_contrato",
+        "cuenta contrato", "med_numero", "med_serie", "numero_tramite",
+        "joel", "espinar", "samaniego", "tommy", "contratista",
+        "liberado", "liberados", "reprobado", "reprobados",
+        "postergado", "postergados", "reclamo", "reclamos",
+        "mi cuadrilla", "mis trámites", "mis tramites",
+    ]
+    return any(p in m for p in pistas_bd)
+
+
+def es_consulta_manual(mensaje):
+    """True si la pregunta va dirigida al manual CNEL (no a la BD).
+
+    Casos que captura:
+      "muéstrame la figura 22 del manual"
+      "figura 22"
+      "qué dice el numeral 4.37"
+      "cuántos medidores bornera para 8 en un predio"
+      "hasta cuántos amperios se puede usar una bornera"
+
+    Lo que NO captura (sigue yendo a BD):
+      "cuántos medidores instaló tommy"   -> verbo de gestión + nombre
+      "lista de trámites de la cuadrilla 5"
+    """
+    m = mensaje.lower().strip()
+
+    # Un disparador explícito manda, aunque venga con "muéstrame" o "dame"
+    if any(d in m for d in DISPARADORES_MANUAL):
+        return True
+
+    # "figura 22" / "fig 22" / "figura 22-A" sin la palabra manual
+    if re.search(r'\bfig(ura)?\s*\d', m):
+        return True
+
+    # Consulta de ESPECIFICACIÓN técnica (cómo se instala / cuánto aguanta).
+    # Estas no se resuelven con la BD operativa: están en el manual.
+    tecnicas = [
+        "bornera", "borneras", "ampacidad", "amperaje", "amperios",
+        "calibre", "acometida", "acometidas", "ducto", "tubería", "tuberia",
+        "altura de instalación", "altura de instalacion", "altura mínima",
+        "altura minima", "precinto", "sello", "visor", "zona de medidor",
+        "caja de medidor", "puesta a tierra", "aterramiento",
+    ]
+    return any(t in m for t in tecnicas)
 
 
 # =====================================================
@@ -455,6 +535,14 @@ async def procesar_mensaje(update, context, mensaje):
             await update.message.reply_text(MEDIDOR_NO_ENCONTRADO_MSG.format(numero))
             return
     
+    # ===== DETECTAR CONSULTA AL MANUAL CNEL (antes de la BD) =====
+    # Va ANTES de es_consulta_bd porque "muéstrame" / "dame" están en
+    # PALABRAS_DB y desviaban al SQL cualquier pregunta con figura.
+    if es_consulta_manual(mensaje) and not _tiene_lenguaje_bd(mensaje.lower()):
+        context.args = mensaje.split()
+        await manual_command(update, context)
+        return
+
     # ===== DETECTAR CONSULTA SOBRE LA BASE DE DATOS =====
     if es_consulta_bd(mensaje):
         await update.message.reply_text("🔍 *Consultando la base de datos...*", parse_mode='Markdown')
@@ -525,6 +613,49 @@ async def preguntar_command(update, context):
 # COMANDO /manual — RAG del manual CNEL (cláusulas + figuras)
 # =====================================================
 
+# Directorio real que sirve el servidor web (corre en Termux, no en PRoot)
+_DIR_FIGS_PUBLICADAS = "/data/data/com.termux/files/home/public_html/manual_figs"
+_URL_FIGS_BASE = "https://ecosistema.salchipapabot.cc.cd/manual_figs"
+
+# Slugs que no coinciden con el patrón automático fig<n>
+_SLUGS_ESPECIALES = {
+    "FIG. 33": "fig33_4medidores",
+    "FIG. 34": "fig34_8medidores",
+    "FIG. 35": "fig35_12medidores",
+}
+
+
+def _url_figura(fid):
+    """Reconstruye el link del PNG de una figura, verificando que exista.
+
+    El puente PRoot a veces devuelve la figura con `url: null` aunque el PNG
+    esté publicado (timing de _existe_publicada, JSON truncado). Aquí se
+    comprueba el archivo REAL en disco y se arma el link con el mismo slug
+    que usa el índice. Devuelve None solo si el archivo no está publicado.
+
+    OJO con las variantes: los sufijos van en MAYÚSCULA (fig20-A.png), no en
+    minúscula. Por eso se prueban las dos formas antes de rendirse.
+    """
+    try:
+        # Candidatos de slug, en orden de preferencia
+        candidatos = []
+        esp = _SLUGS_ESPECIALES.get(fid)
+        if esp:
+            candidatos.append(esp)
+        # "FIG. 20-A" -> "fig20-A" (sufijo en mayúscula, como está publicado)
+        base = fid.replace(" ", "").replace(".", "")      # FIG20-A
+        candidatos.append("fig" + base[3:])               # fig20-A
+        candidatos.append(base.lower())                   # fig20-a
+
+        for slug in dict.fromkeys(candidatos):
+            ruta = os.path.join(_DIR_FIGS_PUBLICADAS, slug + ".png")
+            if os.path.exists(ruta) and os.path.getsize(ruta) > 1000:
+                return f"{_URL_FIGS_BASE}/{slug}.png"
+    except Exception as e:
+        log(f"⚠️ _url_figura({fid}): {e}")
+    return None
+
+
 async def manual_command(update, context):
     """Comando /manual - pregunta al manual MN-COM-AC-001 V3.
 
@@ -545,6 +676,21 @@ async def manual_command(update, context):
         return
 
     mensaje = " ".join(context.args)
+
+    # Sin contexto no hay nada que buscar: "muestra lo mismo" huérfano
+    # devolvía 4 cláusulas al azar y ninguna figura.
+    if len(mensaje.split()) <= 4 and not es_consulta_manual(mensaje):
+        await update.message.reply_text(
+            "🤔 Necesito que me digas *qué* quieres ver del manual.\n\n"
+            "Ejemplos directos:\n"
+            "`figura 22`\n"
+            "`muéstrame la figura 22`\n"
+            "`numeral 4.37`\n"
+            "`cuántos medidores bornera para 8 en un predio`",
+            parse_mode='Markdown'
+        )
+        return
+
     await update.message.reply_text("📕 *Buscando en el manual...*", parse_mode='Markdown')
 
     try:
@@ -557,13 +703,38 @@ async def manual_command(update, context):
         await update.message.reply_text(r["texto"])
 
         # Planos: link, NO MEDIA (MEDIA falla desde la tablet a este chat)
+        # BLINDAJE 2026-11-11: no confiar en f["url"]. El puente PRoot a veces
+        # devuelve la figura SIN url (JSON truncado o _existe_publicada False
+        # por timing) aunque el PNG esté publicado. Se reconstruye el link con
+        # el mismo criterio del índice y se comprueba que responda HTTP 200.
+        enviadas = 0
         for f in r["figuras"][:3]:
-            if f.get("url"):
+            url = f.get("url") or _url_figura(f["id"])
+            if url:
+                # SIN parse_mode: los títulos del manual traen guiones,
+                # paréntesis, asteriscos y guiones bajos sueltos ("_") que
+                # rompen el Markdown de Telegram con
+                # "can't find end of the entity starting at byte offset N".
+                # El link se ve igual en texto plano y Telegram lo hace
+                # clickable solo.
                 await update.message.reply_text(
-                    f"📐 *{f['id']}* — {f['titulo']}\n"
-                    f"_{f['dimensiones']}_\n{f['url']}",
-                    parse_mode='Markdown'
+                    f"📐 {f['id']} — {f['titulo']}\n"
+                    f"{f['dimensiones']}\n{url}"
                 )
+                enviadas += 1
+                log(f"📐 Figura enviada: {f['id']} -> {url}"
+                    f"{' (url reconstruida)' if not f.get('url') else ''}")
+            else:
+                log(f"⚠️ Figura SIN url: {f.get('id')} ({f.get('titulo','')[:40]}) "
+                    f"claves={list(f.keys())}")
+
+        # Si el RAG trajo figuras pero ninguna tenía URL, avisarlo en vez de
+        # quedarse callado (el silencio parecía "no existe la figura").
+        if r["figuras"] and enviadas == 0:
+            ids = ", ".join(f.get("id", "?") for f in r["figuras"][:3])
+            await update.message.reply_text(
+                f"⚠️ Encontré {ids} en el índice, pero sin PNG publicado todavía."
+            )
         log(f"✅ /manual respondido ({len(r['fuentes'])} fuentes)")
 
     except Exception as e:

@@ -41,3 +41,17 @@ sap_body.html
 # Capturas de Playwright (asignación AFlow)
 asignacion/tools/aflow_shots/
 asignacion/__pycache__/
+
+# ── Backups locales (NO van al repo) ────────────────────────────────────────
+# 2026-11-13: había 18 copias .db.bak_* de la BD (una sola pesa ~400 MB),
+# más backups de código .py.bak_*. Nunca deben entrar a git: inflan el repo
+# y contienen datos de clientes.
+*.db.bak*
+*.db.bak_*
+*.py.bak*
+*.sh.bak*
+*.sql.bak*
+backups/
+diag_puente.sh
+prueba_ab.sh
+usuarios_sap_backup.sql
