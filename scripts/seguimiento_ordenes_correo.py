@@ -41,9 +41,15 @@ FRASE_GESTION = "favor su atencion y gestion"
 # Se detecta por el ASUNTO (es donde CNEL lo pide siempre). Palabras sin
 # acento para no depender de la codificación.
 RE_ENTREGA_MEDIDOR = re.compile(
-    r"(entreg\w*\s+(de\s+|del\s+)?medidor)"        # entrega de medidor / entrega del medidor
-    r"|(medidor\w*\s+.{0,20}?\s*entreg)"            # medidor ... entrega
-    r"|(entrega\w*\s+a\s+laboratorio)",             # entrega a laboratorio
+    # "entrega de medidor" / "entrega del medidor" / "entregar el medidor"
+    # ⚠️ 2026-11-14: faltaba el artículo "el". La frase REAL que usa CNEL es
+    # "Favor su atención y gestión para que puedan entregar el medidor a
+    # laboratorio" — con "el" el patrón no la capturaba y esos correos
+    # entraban al ciclo (casos 7 y 12 de la revisión de Miguel).
+    r"(entreg\w*\s+(de\s+|del\s+|el\s+)?medidor)"
+    r"|(medidor\w*\s+.{0,20}?\s*entreg)"              # medidor ... entrega
+    r"|(entreg\w*\s+a\s+laboratorio)"                 # entregar a laboratorio
+    r"|(entrega\w*\s+a\s+laboratorio)",
     re.I)
 
 # EMER / emergencia en el asunto (Miguel, 7-nov-2026): estas órdenes las pide
@@ -549,8 +555,12 @@ def conexion():
     return con
 
 
-def buscar_orden(con, numero_orden, dias_atras=1, dias_adelante=1, fecha_correo=None):
-    """Busca la solicitud en recorrido_cuadrillas con ventana +-24h."""
+def buscar_orden(con, numero_orden, dias_atras=2, dias_adelante=2, fecha_correo=None):
+    """Busca la solicitud en recorrido_cuadrillas con ventana +-2 días.
+
+    ±2 y no ±1 (2026-11-14): ver la nota de buscar_por_cuenta() — el correo
+    llega días después de que el trámite entró a ACIIS, no el mismo día.
+    """
     base = parse_fecha(fecha_correo)
     desde = (base - timedelta(days=dias_atras)).strftime("%Y-%m-%d")
     hasta = (base + timedelta(days=dias_adelante)).strftime("%Y-%m-%d")
@@ -567,8 +577,48 @@ def buscar_orden(con, numero_orden, dias_atras=1, dias_adelante=1, fecha_correo=
     """, (numero_orden, desde, hasta)).fetchone()
 
 
-def buscar_por_cuenta(con, cuenta, fecha_correo=None, dias_atras=1, dias_adelante=1):
-    """Busca por cuenta contrato. Devuelve (fila, es_ambiguo)."""
+# Desfase máximo (en días, valor absoluto) entre la fecha del correo y la de la
+# orden para aceptarla en el fallback por cuenta. 21 = el mayor desfase
+# legítimo observado en la BD (16 días, cuenta 201018245120) + margen.
+# Por encima de esto se asume que la orden del correo AÚN NO llegó a la BD.
+LIMITE_DIAS_FALLBACK = 21
+
+
+def _dias_desde(iso_fecha, base):
+    """Días entre `iso_fecha` y `base` (datetime). None si no se puede parsear.
+
+    Puede ser negativo: la orden puede nacer DESPUÉS del correo.
+    """
+    if not iso_fecha:
+        return None
+    try:
+        f = datetime.fromisoformat(str(iso_fecha)[:19])
+    except Exception:
+        try:
+            f = datetime.strptime(str(iso_fecha)[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+    try:
+        return (base - f).days
+    except Exception:
+        return None
+
+
+def buscar_por_cuenta(con, cuenta, fecha_correo=None, dias_atras=2, dias_adelante=2):
+    """Busca por cuenta contrato. Devuelve (fila, es_ambiguo).
+
+    Ventana ±2 días (antes ±1). Medido el 14-nov sobre las 19 filas en
+    NO_ENCONTRADA: el desfase real entre la fecha del correo y fecha_analisis
+    de la orden no es de horas, es de DÍAS — el correo llega cuando el trámite
+    ya lleva días en ACIIS. Casos verificados por Miguel:
+      · 200049629641 -> correo 13-nov, analisis 11-nov (2 d)
+      · 201020955476 -> correo 13-nov, analisis 07-nov (6 d); la orden se
+        EJECUTÓ 1 h después del correo, pero la fila ya existía desde el 7.
+    Con ±1 los dos casos se perdían. ±2 cubre el caso de 2 días completo y
+    parte del de 6 (ese sigue necesitando otra vía). No se amplía más a
+    propósito: con cuentas de muchas filas, una ventana ancha trae la orden
+    equivocada (ver 201017959556, cuyo análisis es 238 días anterior).
+    """
     base = parse_fecha(fecha_correo)
     desde = (base - timedelta(days=dias_atras)).strftime("%Y-%m-%d")
     hasta = (base + timedelta(days=dias_adelante)).strftime("%Y-%m-%d")
@@ -584,7 +634,47 @@ def buscar_por_cuenta(con, cuenta, fecha_correo=None, dias_atras=1, dias_adelant
     """, (cuenta, desde, hasta)).fetchall()
 
     if not filas:
-        return None, False
+        # ── Fallback: orden reciente por PLANIFICACIÓN (2026-11-14) ────────
+        # Caso real 201020955476 (verificado por Miguel): el correo llegó el
+        # 13-nov y la orden se ejecutó 1 h después, pero su fecha_analisis es
+        # del 7-nov — 6 días antes. Con la ventana (aunque sea ±2) nunca entra.
+        #
+        # Se descartó ampliar la ventana: hay órdenes legítimamente viejas sin
+        # ejecutar (201018245120, 16 días) y otras de hace meses que NO son la
+        # orden del correo (201017959556, 237 días → traería la equivocada).
+        #
+        # El criterio NO es la fecha de nacimiento sino: "¿es la orden MÁS
+        # RECIENTE de esta cuenta y es razonablemente contemporánea?". Se mira
+        # fecha_planificacion (cuando se asignó a cuadrilla), que es lo que el
+        # correo de CNEL está comunicando.
+        #
+        # LÍMITE_DIAS_FALLBACK = 21: el mayor desfase legítimo visto en la BD
+        # es 16 días (201018245120) + margen. Por encima se considera que la
+        # orden del correo NO ha llegado a la BD (ORDEN_NO_LLEGO).
+        filas = con.execute("""
+            SELECT numero_solicitud, numero_tramite, cuenta_contrato, cliente,
+                   cuadrilla, tipo_solicitud, fecha_analisis, fecha_planificacion,
+                   fecha_ejecucion, accion_ejecutada
+              FROM recorrido_cuadrillas
+             WHERE cuenta_contrato = ?
+               AND COALESCE(NULLIF(TRIM(fecha_planificacion), ''),
+                            fecha_analisis) IS NOT NULL
+             ORDER BY COALESCE(NULLIF(TRIM(fecha_planificacion), ''),
+                               fecha_analisis) DESC
+        """, (cuenta,)).fetchall()
+
+        if not filas:
+            return None, False
+
+        reciente = filas[0]
+        ref = (reciente["fecha_planificacion"] or "").strip() or (reciente["fecha_analisis"] or "")
+        d = _dias_desde(ref, base)
+        # d puede ser negativo (la orden nació DESPUÉS del correo): es válido,
+        # el correo pide y ACIIS crea la orden días más tarde (visto: -3 días).
+        if d is None or abs(d) > LIMITE_DIAS_FALLBACK:
+            return None, False
+        return reciente, False
+
     if len(filas) == 1:
         return filas[0], False
 
@@ -661,20 +751,37 @@ def correo_asignacion(rec, ahora):
     )
 
 
-def correo_ejecutada(rec, gt, ahora):
-    obs = (gt["observacion_gestion"] or "").strip() if gt else ""
-    if not obs:
-        partes = [x.strip() for x in ((gt["motivo_no_ejecucion"] if gt else "") or "",
-                                      (gt["detalle_no_ejecucion"] if gt else "") or "") if x and x.strip()]
-        obs = " - ".join(partes) if partes else "SIN OBSERVACION"
+def correo_ejecutada(rec, gt, ahora, nota_origen=None):
+    """Correo de EJECUTADA.
+
+    `gt` puede ser None cuando la ejecución está en recorrido_cuadrillas pero
+    gestión de trámites aún no la registra (2026-11-14). En ese caso se usa la
+    fecha de ejecución del propio recorrido y se añade `nota_origen` para que
+    CNEL sepa de dónde sale el dato.
+    """
+    if gt:
+        obs = (gt["observacion_gestion"] or "").strip()
+        fecha_ej = gt["fecha_ejecucion"]
+        cuenta_ej = gt["cuenta_contrato"] or (rec["cuenta_contrato"] or "-")
+        if not obs:
+            partes = [x.strip() for x in ((gt["motivo_no_ejecucion"] or "") or "",
+                                          (gt["detalle_no_ejecucion"] or "") or "") if x and x.strip()]
+            obs = " - ".join(partes) if partes else "SIN OBSERVACION"
+    else:
+        # Ejecución solo en recorrido_cuadrillas: NO se inventa observación.
+        obs = "SIN OBSERVACION"
+        fecha_ej = rec["fecha_ejecucion"]
+        cuenta_ej = rec["cuenta_contrato"] or "-"
+    if nota_origen:
+        obs = f"{obs}\n({nota_origen})" if obs != "SIN OBSERVACION" else f"SIN OBSERVACION\n({nota_origen})"
     return (
         f"📄 SOLICITUD {rec['numero_solicitud']}\n"
         f"{SEP}\n"
         f"📋 Número de trámite: {rec['numero_tramite'] or '-'}\n"
         f"🏷 Tipo: {rec['tipo_solicitud'] or '-'}\n"
         f"👥 Cuadrilla: {rec['cuadrilla'] or '-'}\n"
-        f"📅 Fecha ejecución: {gt['fecha_ejecucion'] if gt else '-'}\n"
-        f"🔢 Cuenta contrato: {gt['cuenta_contrato'] if gt else (rec['cuenta_contrato'] or '-')}\n"
+        f"📅 Fecha ejecución: {fecha_ej}\n"
+        f"🔢 Cuenta contrato: {cuenta_ej}\n"
         f"{SEP}\n"
         f"📝 Observación:\n{obs}\n\n"
         + FIRMA.format(fecha=ahora)
@@ -780,8 +887,8 @@ def enviar_resumen_diario():
 
     pendientes = con.execute("""
         SELECT numero_orden, estado, notas FROM seguimiento_orden_correo
-         WHERE estado IN ('SIN_CUADRILLA','NO_ENCONTRADA','AMBIGUO','PENDIENTE',
-                          'PENDIENTE_REVISION')
+         WHERE estado IN ('SIN_CUADRILLA','NO_ENCONTRADA','ORDEN_NO_LLEGO','AMBIGUO',
+                          'PENDIENTE','PENDIENTE_REVISION')
          ORDER BY creado_en DESC LIMIT 20""").fetchall()
 
     lineas = [f"📬 *Seguimiento correos CNEL — {hoy}*", ""]
@@ -985,9 +1092,11 @@ def main():
         if ya:
             # A partir de aquí la clave buena es la que ya está en la fila.
             clave_orden = ya["numero_orden"]
-            # Los casos NO_ENCONTRADA deben seguir evaluándose cada hora hasta que
-            # aparezcan en la BD o se dispare el aviso de 48 h.
-            pendiente_revision = (ya["estado"] == "NO_ENCONTRADA"
+            # Los casos NO_ENCONTRADA y ORDEN_NO_LLEGO deben seguir evaluándose
+            # cada hora hasta que aparezcan en la BD o se dispare el aviso de 48 h.
+            # ORDEN_NO_LLEGO (2026-11-14) es el mismo comportamiento: la orden
+            # puede publicarse en ACIIS más tarde y hay que reevaluar.
+            pendiente_revision = (ya["estado"] in ("NO_ENCONTRADA", "ORDEN_NO_LLEGO")
                                   and not ya["aviso_48h_enviado"])
             # ⚠️ BUG ARREGLADO 2026-11-13 (orden 90012490): antes, cualquier fila ya
             # registrada hacía `continue` aquí, ANTES de llegar al guard por etapa de
@@ -1049,7 +1158,19 @@ def main():
                  1 if RE_RESPUESTA.match(asunto) else 0))
 
         # R3: pedidos de entrega de medidor -> se ignoran (no se responde)
-        if RE_ENTREGA_MEDIDOR.search(asunto) or RE_ENTREGA_MEDIDOR.search(asunto.replace("Re:", "")):
+        # 2026-11-14: además del ASUNTO se mira el CUERPO. Casos 7 y 12 de la
+        # revisión de Miguel: el asunto era genérico ("MEDIDOR INSTALADO ...")
+        # y la petición real venía dentro: "Favor su atención y gestión para
+        # que puedan entregar el medidor a laboratorio". Con solo el asunto
+        # pasaban al ciclo y quedaban como NO_ENCONTRADA para siempre.
+        try:
+            mime_r3 = himalaya(["message", "export", cid, "--full", "-a", CUENTA])
+            cuerpo_r3 = cuerpo_sin_cita(mime_r3)
+        except Exception:
+            cuerpo_r3 = ""
+        if (RE_ENTREGA_MEDIDOR.search(asunto)
+                or RE_ENTREGA_MEDIDOR.search(asunto.replace("Re:", ""))
+                or RE_ENTREGA_MEDIDOR.search(cuerpo_r3)):
             stats["ignorado_entrega_medidor"] = stats.get("ignorado_entrega_medidor", 0) + 1
             print(f"  🚫 [{cid}] pide ENTREGA DE MEDIDOR — ignorado ({asunto[:60]})")
             continue
@@ -1172,13 +1293,34 @@ def main():
                 (clave_orden,)).fetchone()
 
             if not existente:
+                # ── ORDEN_NO_LLEGO vs NO_ENCONTRADA (2026-11-14) ──────────
+                # Antes todo caía en NO_ENCONTRADA, que mezclaba dos cosas muy
+                # distintas y hacía ilegible el informe:
+                #
+                #  · ORDEN_NO_LLEGO: el correo es legítimo (trae orden o cuenta
+                #    real) pero esa orden NO está en recorrido_cuadrillas. No es
+                #    un fallo del bot: ACIIS todavía no la publicó. Casos 2 y 4
+                #    de la revisión de Miguel: "nunca llegó la orden a nosotros".
+                #  · NO_ENCONTRADA: la cuenta SÍ tiene filas, pero ninguna que
+                #    corresponda al correo (fuera del fallback de 21 días). Eso
+                #    sí puede ser un desfase que hay que mirar.
+                #
+                # Se distingue con una consulta barata: ¿existe la cuenta?
+                if cuenta and con.execute(
+                        "SELECT 1 FROM recorrido_cuadrillas WHERE cuenta_contrato=? LIMIT 1",
+                        (cuenta,)).fetchone():
+                    estado_nuevo = "NO_ENCONTRADA"
+                    nota_nueva = "cuenta existe pero sin orden en la ventana ni en el fallback de 21 d"
+                else:
+                    estado_nuevo = "ORDEN_NO_LLEGO"
+                    nota_nueva = "la orden aún no está en recorrido_cuadrillas (ACIIS no la publicó)"
+
                 if enviar_de_verdad:
                     con.execute("""INSERT OR IGNORE INTO seguimiento_orden_correo
                         (numero_orden, cuenta_contrato, estado, notas, correo_id_origen,
                          asunto_origen, creado_en)
-                        VALUES (?,?,'NO_ENCONTRADA','esperando aparición en recorrido',
-                                ?,?,datetime('now','localtime'))""",
-                        (clave_orden, cuenta, cid, asunto))
+                        VALUES (?,?,?,?,?,?,datetime('now','localtime'))""",
+                        (clave_orden, cuenta, estado_nuevo, nota_nueva, cid, asunto))
                     con.commit()
                 existente = con.execute(
                     "SELECT * FROM seguimiento_orden_correo WHERE numero_orden=?",
@@ -1257,6 +1399,27 @@ def main():
                 # quedaba sin respuesta. Se contesta "en proceso" (una sola vez).
                 # Si el asunto es EMER se usa la misma plantilla (misma etapa).
                 etapa, cuerpo_mail = "EN_PROCESO", correo_en_proceso(rec, ahora)
+            else:
+                # ── EJECUTADA EN CAMPO, NO EN gestion_tramites (2026-11-14) ──
+                # Hueco real: `fecha_ejecucion` de recorrido_cuadrillas tiene
+                # fecha, pero gestion_tramites NO registra el trámite. Antes
+                # caía en el `if not etapa: continue` de abajo y el correo a
+                # CNEL NUNCA salía — silencio total aunque el trabajo estaba
+                # hecho en campo.
+                #
+                # Decisión de Miguel: en ese caso SÍ se avisa ("b) Avisar").
+                # Casos 5 y 6 de la revisión del 14-nov: "la orden sí fue
+                # atendida días atrás" / "la orden sí fue atendida hoy".
+                #
+                # La etapa es EJECUTADA y usa la MISMA plantilla, con una
+                # observación que aclara el origen del dato, para que CNEL no
+                # crea que viene de gestión de trámites.
+                etapa = "EJECUTADA"
+                cuerpo_mail = correo_ejecutada(
+                    rec, gt, ahora,
+                    nota_origen=("ejecución registrada en el recorrido de "
+                                 "cuadrillas; gestion_tramites aún sin registro"),
+                )
 
         if not etapa:
             if args.verbose:
