@@ -421,7 +421,14 @@ RE_ORDEN = re.compile(
 RE_ORDEN_ALT = re.compile(
     r"\b(?:EMER|APP|ORDEN)\s*#?\s*:?\s*(\d{6,12})", re.I)
 RE_CUENTA = re.compile(
-    r"(?:CTA|CT|AC|CC|CLTE|CUENTA(?:\s+CONTRATO)?)\s*[-#]?\s*:?\s*(\d{8,13})", re.I)
+    r"(?:CTA|CT|AC|CC|CLTE|CUENTA(?:\s+CONTRATO)?)\s*[-#]?[:°º]?\s*:?(\d{8,13})", re.I)
+
+# Orden CNEL "desnuda": sin ninguna etiqueta delante (Fix A, 2026-11-13).
+# Caso real: "Re: DOMICILIIO S/E 90014210". Las órdenes del contrato arrancan
+# con 8 o 9 y tienen 8 dígitos (verificado en ordenes_sap: 90012757, 80136678,
+# 90014210). Se excluyen los prefijos de cuenta contrato (2000/2010, 12-13 díg)
+# y los trámites (32xxxxxxxxx, 9 díg) porque el patrón exige exactamente 8.
+RE_ORDEN_DESNUDA = re.compile(r"(?<!\d)([89]\d{7})(?!\d)")
 
 
 def extraer(subject):
@@ -436,6 +443,24 @@ def extraer(subject):
         # Fallback para formatos CNEL con '#' o prefijo EMER/APP (ver RE_ORDEN_ALT).
         # El primer número de 6-12 dígitos tras la etiqueta se toma como orden.
         m = RE_ORDEN_ALT.search(s)
+        if m:
+            orden = m.group(1)
+
+    # ⚠️ FALLBACK NÚMERO DESNUDO (Fix A, 2026-11-13).
+    # Caso real: "Re: DOMICILIIO S/E 90014210" — la orden viene sin NINGUNA
+    # etiqueta (ni ORDEN, ni EMER, ni CTA), así que los patrones de arriba no la
+    # veían y el correo caía en `ignorado_sin_datos`. Era una emergencia por
+    # falta de servicio que nunca entró al ciclo.
+    #
+    # Rango real de órdenes CNEL, verificado en ordenes_sap:
+    #   solicitudes 900xxxxx -> orden 0000900xxxxx
+    #   solicitudes 801xxxxx -> orden 0000801xxxxx
+    # Los trámites son 32xxxxxxxxx (9 díg, otro rango) y las cuentas 2000/2010
+    # (12-13 díg), así que no se pisan con este patrón.
+    # Solo se aplica si aún no hay orden Y no hay cuenta: si el asunto trae una
+    # cuenta 2000/2010, esa manda (es la clave de seguimiento preferida).
+    if not orden:
+        m = RE_ORDEN_DESNUDA.search(s)
         if m:
             orden = m.group(1)
 
@@ -511,6 +536,16 @@ def cuerpo_sin_cita(raw_mime):
 def conexion():
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
+    # Blidaje del modo seco: tabla de ensayos (no toca el estado real).
+    con.execute("""CREATE TABLE IF NOT EXISTS seco_ensayos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        clave_orden TEXT NOT NULL,
+        etapa TEXT NOT NULL,
+        correo_id TEXT,
+        asunto TEXT,
+        ensayado_en TEXT DEFAULT (datetime('now','localtime')),
+        UNIQUE(clave_orden, etapa))""")
+    con.commit()
     return con
 
 
@@ -819,9 +854,84 @@ def main():
     except sqlite3.OperationalError:
         uid_previo = None   # tabla aún no creada (BD vieja) -> modo ventana
 
+    # ── RECONCILIACIÓN DE HUÉRFANOS (Fix B, 13-nov-2026) ────────────────────
+    # Problema real (orden 90012757, EMER persona de la tercera edad): el correo
+    # se anotó en `correos_vistos` (línea ~923) y la corrida murió ANTES de crear
+    # su fila en seguimiento_orden_correo. Resultado: el puntero ya lo había
+    # pasado y `correos_vistos` lo daba por procesado -> quedaba invisible para
+    # siempre, sin que CNEL recibiera ningún aviso.
+    #
+    # Regla: todo correo que esté en `correos_vistos` y NO tenga fila en
+    # seguimiento_orden_correo es un huérfano. Se rebobina el puntero hasta
+    # justo antes del huérfano más antiguo para que la próxima pasada lo relea.
+    #
+    # Es SEGURO rebobinar: el puntero es solo eficiencia (línea 809). El candado
+    # contra duplicados es el estado por etapa en la tabla, así que los correos
+    # que ya tienen fila se saltan solos.
+    try:
+        huerfanos = con.execute("""
+            SELECT cv.uid, cv.numero_orden, cv.asunto
+              FROM correos_vistos cv
+              LEFT JOIN seguimiento_orden_correo s
+                     ON s.numero_orden = cv.numero_orden
+             WHERE s.numero_orden IS NULL
+               AND cv.numero_orden IS NOT NULL
+               AND cv.numero_orden <> ''
+             ORDER BY cv.uid""").fetchall()
+    except sqlite3.OperationalError:
+        huerfanos = []
+
+    if huerfanos:
+        uid_min = min(int(h[0]) for h in huerfanos)
+        print(f"\n♻️  HUÉRFANOS: {len(huerfanos)} correo(s) visto(s) sin fila en seguimiento")
+        for h in huerfanos:
+            print(f"     uid {h[0]} · orden {h[1]} · {(h[2] or '')[:50]}")
+        nuevo_ptr = max(uid_min - 1, 0)
+        if uid_previo is None or nuevo_ptr < uid_previo:
+            con.execute("""INSERT INTO puntero_imap (carpeta, uid_ultimo, actualizado_en)
+                           VALUES ('INBOX', ?, datetime('now','localtime'))
+                           ON CONFLICT(carpeta) DO UPDATE SET
+                             uid_ultimo=excluded.uid_ultimo,
+                             actualizado_en=excluded.actualizado_en""", (nuevo_ptr,))
+            con.commit()
+            print(f"♻️  Puntero rebobinado {uid_previo} → {nuevo_ptr} para releerlos")
+            uid_previo = nuevo_ptr
+
     raw = himalaya(["envelope", "list", "-a", CUENTA, "--folder", "INBOX",
                     "-s", str(args.limite), "--output", "json"])
     correos = json.loads(raw)
+
+    # ── DETECCIÓN DE HUECOS DE UID (Fix B2, 13-nov-2026) ────────────────────
+    # Problema real (orden 90014210, uid 8837): el puntero decía "leído hasta
+    # 8878" pero la ventana de lectura solo traía los últimos N correos. Los que
+    # quedaron entre el UID más viejo de la ventana y el puntero NUNCA se
+    # evaluaron -- ni siquiera entraron a la lista. Al avanzar el puntero, esos
+    # correos se perdían para siempre.
+    #
+    # Regla: si el UID más viejo de la ventana es MAYOR que (puntero + 1), hay un
+    # hueco: existen correos con UID <= puntero que esta ventana no cubre.
+    # Se rebobina el puntero al UID más viejo disponible - 1 y se procesa por
+    # lotes: cada corrida lee una ventana completa nueva, y el puntero solo
+    # avanza cuando el hueco queda cerrado.
+    #
+    # Como el puntero sigue siendo solo eficiencia (el candado real es el estado
+    # por etapa en la tabla), rebobinar no puede duplicar correos.
+    if correos:
+        uids = sorted(_uid(m) for m in correos)
+        uid_min_ventana = uids[0]
+        if uid_previo is not None and uid_min_ventana > uid_previo + 1:
+            hueco = uid_min_ventana - uid_previo - 1
+            print(f"\n🕳️  HUECO DE UID: la ventana arranca en {uid_min_ventana} "
+                  f"pero el puntero está en {uid_previo} (~{hueco} correo(s) sin evaluar)")
+            nuevo_ptr = uid_min_ventana - 1
+            con.execute("""INSERT INTO puntero_imap (carpeta, uid_ultimo, actualizado_en)
+                           VALUES ('INBOX', ?, datetime('now','localtime'))
+                           ON CONFLICT(carpeta) DO UPDATE SET
+                             uid_ultimo=excluded.uid_ultimo,
+                             actualizado_en=excluded.actualizado_en""", (nuevo_ptr,))
+            con.commit()
+            print(f"🕳️  Puntero rebobinado {uid_previo} → {nuevo_ptr} para cubrir el hueco")
+            uid_previo = nuevo_ptr
 
     if uid_previo is not None:
         antes = len(correos)
@@ -858,11 +968,23 @@ def main():
         # poder consultar el estado antes de gastar tiempo leyendo el cuerpo.
         orden, cuenta = extraer(asunto)
         clave_orden = orden or cuenta
+        # ⚠️ Fix C (13-nov-2026): buscar la fila por ORDEN **o** por CUENTA.
+        # El correo puede traer solo la cuenta mientras la fila se guardó con el
+        # número de orden (o al revés). Si se consulta por una sola clave, el
+        # candado queda ciego y la etapa se reenvía (así se duplicó la 90012757).
         ya = con.execute(
-            "SELECT estado, aviso_48h_enviado, enviado_asignacion, enviado_en_proceso,"
-            " enviado_ejecutada, enviado_cierre"
-            " FROM seguimiento_orden_correo WHERE numero_orden=?", (clave_orden,)).fetchone()
+            "SELECT numero_orden, estado, aviso_48h_enviado, enviado_asignacion,"
+            " enviado_en_proceso, enviado_ejecutada, enviado_cierre"
+            " FROM seguimiento_orden_correo"
+            " WHERE numero_orden = ?"
+            "    OR (? IS NOT NULL AND numero_orden = ?)"
+            "    OR (? IS NOT NULL AND cuenta_contrato = ?)"
+            " ORDER BY (numero_orden = ?) DESC"
+            " LIMIT 1",
+            (clave_orden, orden, orden, cuenta, cuenta, clave_orden)).fetchone()
         if ya:
+            # A partir de aquí la clave buena es la que ya está en la fila.
+            clave_orden = ya["numero_orden"]
             # Los casos NO_ENCONTRADA deben seguir evaluándose cada hora hasta que
             # aparezcan en la BD o se dispare el aviso de 48 h.
             pendiente_revision = (ya["estado"] == "NO_ENCONTRADA"
@@ -1018,6 +1140,25 @@ def main():
                     con.commit()
                 continue
 
+        # ── ALINEACIÓN DE LA CLAVE (Fix C, 13-nov-2026) ────────────────────
+        # ⚠️ BUG GRAVE que este bloque corrige (orden 56342231, duplicado real):
+        #
+        # `clave_orden` se calculaba como `orden or cuenta` ANTES de resolver la
+        # solicitud. Cuando el correo solo traía CUENTA (p.ej. "Re: DESCONEXION
+        # DEFINITIVA 200048065235"), clave_orden quedaba en la cuenta. Pero al
+        # resolver por cuenta, `rec["numero_solicitud"]` da la ORDEN real
+        # (56342231), y la fila se guardaba con numero_orden='56342231'.
+        #
+        # Resultado: el guard anti-reenvío consultaba
+        #     WHERE numero_orden = '200048065235'   -> no encontraba nada
+        # y volvía a enviar la misma etapa en cada barrido. Así se duplicó el
+        # correo de la 90012757 a CNEL (dos mensajes idénticos, 21:05).
+        #
+        # La clave de PERSISTENCIA y de CANDADO debe ser la ORDEN real, siempre.
+        # Se reasigna aquí, una sola vez, antes de cualquier INSERT/UPDATE/guard.
+        if rec is not None:
+            clave_orden = str(rec["numero_solicitud"] or clave_orden)
+
         if rec is None:
             stats["sin_orden_bd"] += 1
             tipo = "orden" if orden else "cuenta"
@@ -1171,6 +1312,37 @@ def main():
         for linea in cuerpo_mail.splitlines():
             print("  " + linea)
         print("  " + "-" * 58)
+
+        # ── BLINDAJE DEL MODO SECO (14-nov-2026) ────────────────────────────
+        # Problema: en seco NINGUNA escritura se ejecutaba, así que el ensayo no
+        # dejaba rastro. Dos corridas en seco seguidas mostraban el MISMO
+        # candidato como si fuera nuevo, y el estado del sistema quedaba listo
+        # para repetir. (El duplicado real de la 90012757 tuvo como causa el
+        # Fix C, ya corregido, pero el seco "mudo" impedía verlo venir.)
+        #
+        # Ahora el seco deja constancia en `seco_ensayos`, tabla SEPARADA que no
+        # toca el estado real. Así:
+        #   • correr el seco dos veces muestra el 2º como "ya ensayado" (idempotente)
+        #   • la BD de seguimiento queda intacta
+        #   • un envío real borra el ensayo de esa (orden, etapa): el seco vuelve
+        #     a ser limpio después de enviar
+        if not enviar_de_verdad:
+            ensayado = con.execute(
+                "SELECT ensayado_en FROM seco_ensayos WHERE clave_orden=? AND etapa=?",
+                (clave_orden, etapa)).fetchone()
+            if ensayado:
+                print(f"  🧪 ya ENSAYADO en seco ({ensayado[0]}) — no cuenta como nuevo")
+            else:
+                con.execute("""INSERT OR IGNORE INTO seco_ensayos
+                    (clave_orden, etapa, correo_id, asunto)
+                    VALUES (?,?,?,?)""", (clave_orden, etapa, cid, asunto))
+                con.commit()
+            continue
+
+        # Envío real: se limpia el ensayo previo de esta etapa para que un seco
+        # posterior la vuelva a mostrar como candidata si hiciera falta.
+        con.execute("DELETE FROM seco_ensayos WHERE clave_orden=? AND etapa=?",
+                    (clave_orden, etapa))
 
         if enviar_de_verdad:
             # v2: UPSERT sobre la orden (una sola fila). No hay correo_id en la
